@@ -1,4 +1,3 @@
-
 # app.py
 # Este é o arquivo principal do aplicativo Streamlit (frontend).
 
@@ -53,7 +52,8 @@ ufpe_internacionalizacao_var = st.sidebar.slider("Variação % em Internacionali
 # Botão para iniciar a simulação
 if st.sidebar.button("Simular Ranking"):
     with st.spinner("Executando simulação..."):
-        ufpe_predicted_ranking, ufpe_predicted_position, ufpe_simulated_notes, top_10_ranking =             run_simulation(
+        ufpe_predicted_ranking, ufpe_predicted_position, ufpe_simulated_notes, top_10_ranking = \
+            run_simulation(
                 ufpe_ensino_var, ufpe_pesquisa_var, ufpe_mercado_var,
                 ufpe_inovacao_var, ufpe_internacionalizacao_var,
                 df_consolidado_processed, current_ufpe_notes, previous_ufpe_notes, final_model,
