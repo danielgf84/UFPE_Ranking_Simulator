@@ -1,3 +1,4 @@
+
 # app.py
 # Este é o arquivo principal do aplicativo Streamlit (frontend).
 
@@ -6,13 +7,21 @@ import pandas as pd
 import numpy as np
 import os
 import sys
+import logging
+
+# Configuração de logging para o frontend
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Adicionar o diretório atual ao PATH para que model_logic possa ser importado
 # Isso é importante para que o Streamlit Cloud encontre model_logic.py
 sys.path.append(os.path.dirname(__file__))
 
 # Importar as funções de lógica do arquivo model_logic.py
-from model_logic import load_artifacts, prepare_simulated_university_data, run_simulation
+try:
+    from model_logic import load_artifacts, prepare_simulated_university_data, run_simulation
+except ImportError as e:
+    st.error(f"Erro ao importar model_logic.py: {e}. Verifique se o arquivo existe e está no PATH.")
+    st.stop() # Para a execução do aplicativo Streamlit
 
 # --- Configuração do Streamlit ---
 st.set_page_config(layout="wide", page_title="Simulador de Ranking UFPE")
@@ -28,7 +37,7 @@ def cached_load_artifacts():
         st.error(f"Erro ao carregar artefatos: {e}. Verifique se o backend foi executado e os arquivos estão corretos.")
         st.stop() # Para a execução do aplicativo Streamlit
 
-final_model, df_consolidado_processed, current_ufpe_notes, previous_ufpe_notes, features, base_features, UFPE_ORIGINAL_NAME = cached_load_artifacts()
+final_model, df_consolidado_processed, current_ufpe_notes, previous_ufpe_notes, features, base_features, UFPE_ORIGINAL_NAME, target_name = cached_load_artifacts()
 
 # --- Construção da Interface Streamlit ---
 
@@ -38,7 +47,7 @@ st.write("Ajuste as variações percentuais para os critérios da UFPE e veja o 
 
 # Barra Lateral (Sidebar) para as entradas do usuário
 st.sidebar.header("Defina as Variações para a UFPE")
-st.sidebar.write(f"Notas atuais da UFPE (ano mais recente):")
+st.sidebar.write(f"Notas atuais da UFPE (edição mais recente):")
 for k, v in current_ufpe_notes.items():
     st.sidebar.write(f"- {k.replace('_', ' ')}: {v:.2f}")
 
@@ -52,25 +61,28 @@ ufpe_internacionalizacao_var = st.sidebar.slider("Variação % em Internacionali
 # Botão para iniciar a simulação
 if st.sidebar.button("Simular Ranking"):
     with st.spinner("Executando simulação..."):
-        ufpe_predicted_ranking, ufpe_predicted_position, ufpe_simulated_notes, top_10_ranking = \
-            run_simulation(
-                ufpe_ensino_var, ufpe_pesquisa_var, ufpe_mercado_var,
-                ufpe_inovacao_var, ufpe_internacionalizacao_var,
-                df_consolidado_processed, current_ufpe_notes, previous_ufpe_notes, final_model,
-                features, base_features, UFPE_ORIGINAL_NAME
-            )
+        try:
+            ufpe_predicted_ranking, ufpe_predicted_position, ufpe_simulated_notes, top_10_ranking =                 run_simulation(
+                    ufpe_ensino_var, ufpe_pesquisa_var, ufpe_mercado_var,
+                    ufpe_inovacao_var, ufpe_internacionalizacao_var,
+                    df_consolidado_processed, current_ufpe_notes, previous_ufpe_notes, final_model,
+                    features, base_features, UFPE_ORIGINAL_NAME, target_name
+                )
 
-        st.subheader("Resultados da Simulação")
-        st.write(f"Com as variações propostas para a UFPE e o crescimento médio dos competidores:")
-        st.metric(label="Posição Prevista da UFPE", value=f"{ufpe_predicted_position}º lugar")
-        st.write(f"*(Ranking técnico previsto: {ufpe_predicted_ranking:.2f})*")
+            st.subheader("Resultados da Simulação")
+            st.write(f"Com as variações propostas para a UFPE e o crescimento médio dos competidores:")
+            st.metric(label="Posição Prevista da UFPE", value=f"{ufpe_predicted_position}º lugar")
+            st.write(f"*(Ranking técnico previsto: {ufpe_predicted_ranking:.2f})*")
 
-        st.subheader("Notas Simuladas da UFPE")
-        simulated_notes_df = pd.DataFrame([ufpe_simulated_notes]).T
-        simulated_notes_df.columns = ["Nota Simulada"]
-        st.dataframe(simulated_notes_df.style.format("{:.2f}"))
+            st.subheader("Notas Simuladas da UFPE")
+            simulated_notes_df = pd.DataFrame([ufpe_simulated_notes]).T
+            simulated_notes_df.columns = ["Nota Simulada"]
+            st.dataframe(simulated_notes_df.style.format("{:.2f}"))
 
-        st.subheader("Top 10 Universidades no Cenário Simulado")
-        st.dataframe(top_10_ranking[['Universidade', 'Predicted_Ranking', 'Predicted_Position']].style.format({'Predicted_Ranking': "{:.2f}"}))
+            st.subheader("Top 10 Universidades no Cenário Simulado")
+            st.dataframe(top_10_ranking[['Universidade', 'Predicted_Ranking', 'Predicted_Position']].style.format({'Predicted_Ranking': "{:.2f}"}))
 
-        st.success("Simulação concluída!")
+            st.success("Simulação concluída!")
+        except Exception as e:
+            st.error(f"Ocorreu um erro durante a simulação: {e}")
+            logging.error(f"Erro durante a simulação: {e}", exc_info=True)
