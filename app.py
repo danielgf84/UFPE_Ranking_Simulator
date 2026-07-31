@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import os
@@ -5,20 +6,45 @@ import joblib
 import numpy as np
 import altair as alt
 
+# --- Definir Caminhos do Projeto no Colab ---
+# Estes devem ser os mesmos caminhos definidos na célula 1.2 do seu notebook Colab
+PROJECT_BASE_PATH = '/content/drive/MyDrive/TESE/simulador'
+DATA_PATH = os.path.join(PROJECT_BASE_PATH, 'data')
+MODELS_PATH = os.path.join(PROJECT_BASE_PATH, 'models')
+
+# --- Variáveis de Arquivo e Modelo ---
+# O nome do arquivo consolidado que você salvou na etapa de limpeza
+input_file_name = 'ruf_consolidado_fe.xlsx' # Ajuste se o nome do seu arquivo consolidado for diferente
+input_file_path = os.path.join(DATA_PATH, input_file_name)
+model_file_name = 'xgboost_model.pkl' # Ajuste se o nome do seu modelo salvo for diferente
+model_path = os.path.join(MODELS_PATH, model_file_name)
+
 try:
     # Tenta importar do model_logic.py
+    # Passa os caminhos como argumentos para as funções de carregamento
     from model_logic import (
-        load_model, load_data, simulate_full_ranking_avg_trend,
+        load_model as ml_load_model, # Renomeia para evitar conflito com @st.cache_resource
+        load_data as ml_load_data,   # Renomeia para evitar conflito com @st.cache_data
+        simulate_full_ranking_avg_trend,
         ufpe_exact_name, target_column, EDITION_YEAR_MAP, get_year_from_edition,
-        model_path, input_file_path
+        calculate_average_trends # Importa a nova função de cálculo de tendências
     )
 
     st.set_page_config(layout="wide")
     st.success("DEBUG: 0. App started, imports complete, and model_logic imported successfully.")
 
+    # --- Funções de Carregamento com Cache (agora no app.py) ---
+    @st.cache_resource
+    def load_cached_model(path):
+        return ml_load_model(path)
+
+    @st.cache_data
+    def load_cached_data(path):
+        return ml_load_data(path)
+
     # --- Carregamento Inicial de Dados e Modelo ---
-    loaded_model = load_model(model_path)
-    df_full = load_data(input_file_path)
+    loaded_model = load_cached_model(model_path)
+    df_full = load_cached_data(input_file_path)
 
     if loaded_model is None or df_full.empty:
         st.error("Erro crítico: Modelo ou dados não puderam ser carregados. Verifique os logs acima.")
@@ -46,18 +72,11 @@ try:
         st.success("DEBUG: 3. Dados da UFPE para a Edição 6 extraídos.")
 
         # Cálculo das Tendências Médias para Outras Universidades
-        # Exclui a UFPE para calcular as tendências médias das outras universidades
-        df_other_universities = df_full[df_full['Universidade'] != ufpe_exact_name].copy()
-
-        # Calcula as tendências médias de mudança de ranking e notas para as outras universidades
-        # Agrupa por universidade e calcula a diferença percentual entre edições consecutivas
-        average_trends = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF']).groupby('Universidade').pct_change().add_suffix('_pct_change_prev')
-        average_trends = average_trends.groupby(level=0).mean() # Média das mudanças percentuais por universidade
+        # AGORA USANDO A FUNÇÃO calculate_average_trends DO model_logic.py
+        average_trends = calculate_average_trends(df_full, ufpe_exact_name)
         st.success("DEBUG: 4. Tendências médias para outras universidades calculadas.")
 
         # Obtém as features esperadas pelo modelo
-        # Isso é crucial para evitar o erro 'feature_names mismatch'
-        # Assumimos que o modelo tem um atributo .feature_names_in_ ou .feature_names
         if hasattr(loaded_model, 'feature_names_in_'):
             model_expected_features = loaded_model.feature_names_in_
         elif hasattr(loaded_model, 'feature_names'):
