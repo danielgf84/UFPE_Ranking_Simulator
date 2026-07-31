@@ -1,6 +1,6 @@
 streamlit
 pandas
-openpyxl # Necessário para pd.read_excel
+openpyxl
 joblib
 numpy
 altair
