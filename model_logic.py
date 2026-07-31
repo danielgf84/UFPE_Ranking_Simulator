@@ -1,14 +1,18 @@
+# model_logic.py
 import pandas as pd
 import os
 import joblib
 import numpy as np
-import streamlit as st # Importar st para usar st.cache_resource/data e st.error/exception/stop
+# import streamlit as st # REMOVIDO: Não importe st aqui
 
 # --- Configuração de Recursos ---
-data_path = 'data'
-model_path = os.path.join(data_path, 'xgboost_model.pkl')
-input_file_name = 'ruf_consolidado_fe.xlsx'
-input_file_path = os.path.join(data_path, input_file_name)
+# Estes caminhos serão sobrescritos pelo app.py, que usará os caminhos do Colab
+# Mas é bom ter valores padrão para testes locais, se necessário.
+# Vamos torná-los variáveis que podem ser passadas para as funções.
+# data_path = 'data' # Será definido externamente
+# model_path = os.path.join(data_path, 'xgboost_model.pkl') # Será definido externamente
+# input_file_name = 'ruf_consolidado_fe.xlsx' # Será definido externamente
+# input_file_path = os.path.join(data_path, input_file_name) # Será definido externamente
 
 ufpe_exact_name = 'Universidade Federal de Pernambuco'
 target_column = 'Ranking'
@@ -20,8 +24,7 @@ EDITION_YEAR_MAP = {
 def get_year_from_edition(edition_number):
     return EDITION_YEAR_MAP.get(edition_number, f"Ano Desconhecido (Edição {edition_number})")
 
-# --- Funções de Carregamento (com cache para Streamlit) ---
-@st.cache_resource
+# --- Funções de Carregamento (sem st.cache_resource/data aqui, serão aplicados no app.py) ---
 def load_model(path):
     print(f"MODEL_LOGIC_DEBUG: Tentando carregar o modelo de: {path}")
     try:
@@ -29,12 +32,9 @@ def load_model(path):
         print(f"MODEL_LOGIC_DEBUG: Modelo carregado com sucesso de {os.path.basename(path)}.")
         return model
     except Exception as e:
-        st.error(f"Erro CRÍTICO ao carregar o modelo: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório e se não está corrompido.")
-        st.exception(e)
-        st.stop()
-        return None
+        print(f"MODEL_LOGIC_ERROR: Erro CRÍTICO ao carregar o modelo: {e}. Verifique o caminho e o arquivo.")
+        raise # Levanta a exceção para ser tratada no app.py
 
-@st.cache_data
 def load_data(path):
     print(f"MODEL_LOGIC_DEBUG: Tentando carregar os dados de: {path}")
     try:
@@ -42,10 +42,8 @@ def load_data(path):
         print(f"MODEL_LOGIC_DEBUG: Dados carregados com sucesso de {os.path.basename(path)}.")
         return df
     except Exception as e:
-        st.error(f"Erro CRÍTICO ao carregar os dados: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório e se não está corrompido.")
-        st.exception(e)
-        st.stop()
-        return pd.DataFrame()
+        print(f"MODEL_LOGIC_ERROR: Erro CRÍTICO ao carregar os dados: {e}. Verifique o caminho e o arquivo.")
+        raise # Levanta a exceção para ser tratada no app.py
 
 # --- Função de Simulação ---
 def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_universities_average_trends,
@@ -78,6 +76,8 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
         else:
             # Aplica as tendências médias para as outras universidades, se o checkbox estiver marcado
             if apply_other_uni_trends:
+                # all_universities_average_trends é um DataFrame com o índice 'Universidade'
+                # e colunas como 'Nota em Ensino_pct_change_prev'
                 for col_base in notas_cols_base_list:
                     col_pct_change_prev = f'{col_base}_pct_change_prev'
                     if uni_row['Universidade'] in all_universities_average_trends.index and col_pct_change_prev in all_universities_average_trends.columns:
@@ -90,6 +90,8 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
                     df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
 
         # Recalcula a Nota Geral para cada universidade após as variações
+        # ATENÇÃO: Se a 'Nota' é calculada de forma mais complexa no RUF, ajuste aqui.
+        # Por enquanto, soma simples das notas das dimensões.
         df_simulated_edicao.loc[uni_idx, 'Nota'] = df_simulated_edicao.loc[uni_idx, notas_cols_base_list].sum()
 
     # --- Pré-processamento para o Modelo ---
@@ -103,24 +105,36 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
     df_simulated_edicao_sorted = df_simulated_edicao.set_index('Universidade').sort_index()
 
     # Lista de colunas para calcular diff/pct_change
+    # Inclui 'Ranking' e as notas e posições das dimensões
     cols_to_compare = ['Ranking'] + notas_cols_base_list + posicao_cols_base_list
+
+    # Cria um DataFrame para armazenar as features de diferença/pct_change
+    features_for_model = pd.DataFrame(index=df_simulated_edicao_sorted.index)
 
     for col in cols_to_compare:
         if col in df_base_edicao_6_sorted.columns and col in df_simulated_edicao_sorted.columns:
             # Calcula a diferença
-            df_simulated_edicao_sorted[f'{col}_diff_prev'] = df_simulated_edicao_sorted[col] - df_base_edicao_6_sorted[col]
+            features_for_model[f'{col}_diff_prev'] = df_simulated_edicao_sorted[col] - df_base_edicao_6_sorted[col]
             # Calcula o percentual de mudança (evita divisão por zero)
-            df_simulated_edicao_sorted[f'{col}_pct_change_prev'] = (
-                df_simulated_edicao_sorted[f'{col}_diff_prev'] / df_base_edicao_6_sorted[col].replace(0, np.nan)
+            features_for_model[f'{col}_pct_change_prev'] = (
+                features_for_model[f'{col}_diff_prev'] / df_base_edicao_6_sorted[col].replace(0, np.nan)
             ).fillna(0) # Preenche NaN (de divisão por zero) com 0
+        else:
+            print(f"MODEL_LOGIC_WARNING: Coluna '{col}' não encontrada em um dos DataFrames para cálculo de features.")
 
-    df_simulated_edicao_processed = df_simulated_edicao_sorted.reset_index()
+    # Adiciona as colunas categóricas (Estado, Pública ou Privada) ao DataFrame de features
+    # df_simulated_edicao_processed é o df_simulated_edicao_sorted com reset_index()
+    # Precisamos garantir que as colunas categóricas também estejam no features_for_model
+    # E que o OHE seja aplicado a elas.
+    df_simulated_edicao_with_features = df_simulated_edicao_sorted.reset_index().merge(
+        features_for_model.reset_index(), on='Universidade', how='left'
+    )
 
     # 2. Aplicar One-Hot Encoding para 'Estado' e 'Pública ou Privada'
     # As categorias devem ser as mesmas usadas no treinamento do modelo
     # Para garantir isso, é ideal ter uma lista de todas as categorias possíveis
     # Por enquanto, vamos usar o pd.get_dummies e depois alinhar com as features esperadas
-    df_simulated_edicao_processed = pd.get_dummies(df_simulated_edicao_processed, columns=['Estado', 'Pública ou Privada'], drop_first=False)
+    df_simulated_edicao_processed = pd.get_dummies(df_simulated_edicao_with_features, columns=['Estado', 'Pública ou Privada'], drop_first=False)
     print("MODEL_LOGIC_DEBUG: One-Hot Encoding aplicado.")
 
     # 3. Alinhar colunas com as features esperadas pelo modelo
@@ -152,30 +166,31 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
     print("MODEL_LOGIC_DEBUG: Simulação concluída.")
     return df_simulated_edicao
 
-# --- Função para calcular tendências médias ---
-def calculate_average_trends(df_full, latest_edition):
+# --- Função para calcular tendências médias (melhorada) ---
+def calculate_average_trends(df_full, ufpe_name):
     print("MODEL_LOGIC_DEBUG: Iniciando calculate_average_trends.")
-    df_prev_edition = df_full[df_full['Edicao_RUF'] == latest_edition - 1].set_index('Universidade')
-    df_current_edition = df_full[df_full['Edicao_RUF'] == latest_edition].set_index('Universidade')
+    # Exclui a UFPE para calcular as tendências médias das outras universidades
+    df_other_universities = df_full[df_full['Universidade'] != ufpe_name].copy()
 
-    # Alinha os índices para garantir que estamos comparando as mesmas universidades
-    common_universities = df_prev_edition.index.intersection(df_current_edition.index)
-    df_prev_edition = df_prev_edition.loc[common_universities]
-    df_current_edition = df_current_edition.loc[common_universities]
+    # Ordena por universidade e edição para calcular pct_change corretamente
+    df_other_universities_sorted = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF'])
 
-    # Colunas para calcular as tendências
-    cols_to_trend = ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota',
-                     'Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização']
+    # Colunas para calcular as tendências (apenas as notas das dimensões)
+    cols_to_trend = ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']
 
-    average_trends_data = {}
-    for col in cols_to_trend:
-        if col in df_prev_edition.columns and col in df_current_edition.columns:
-            diff = df_current_edition[col] - df_prev_edition[col]
-            pct_change = (diff / df_prev_edition[col].replace(0, np.nan)).fillna(0) # Evita divisão por zero
+    # Calcula o percentual de mudança entre edições consecutivas para cada universidade
+    # e para cada coluna de nota
+    pct_changes_df = df_other_universities_sorted.groupby('Universidade')[cols_to_trend].pct_change()
+    pct_changes_df = pct_changes_df.add_suffix('_pct_change_prev')
 
-            average_trends_data[f'{col}_diff_prev'] = diff
-            average_trends_data[f'{col}_pct_change_prev'] = pct_change
+    # Adiciona as colunas de pct_change de volta ao df_other_universities_sorted
+    df_other_universities_with_pct = pd.concat([df_other_universities_sorted, pct_changes_df], axis=1)
 
-    average_trends_df = pd.DataFrame(average_trends_data)
+    # Calcula a média das mudanças percentuais para cada universidade
+    # Ignora NaN que podem surgir no primeiro ano de cada universidade
+    average_trends = df_other_universities_with_pct.groupby('Universidade')[
+        [f'{col}_pct_change_prev' for col in cols_to_trend]
+    ].mean()
+
     print("MODEL_LOGIC_DEBUG: calculate_average_trends concluída.")
-    return average_trends_df
+    return average_trends
