@@ -5,9 +5,9 @@ import joblib
 import numpy as np
 import altair as alt
 
-st.set_page_config(layout="wide") # Garante que a configuração da página seja a primeira coisa a ser definida
+st.set_page_config(layout="wide")
 
-st.success("DEBUG: 0. App started and imports complete.") # Mensagem de sucesso bem no início
+st.success("DEBUG: 0. App started and imports complete.")
 
 # --- 1. Configuração e Carregamento de Recursos ---
 data_path = 'data'
@@ -87,79 +87,70 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
                     new_note_other = original_note_other * (1 + trend_pct_change)
                     df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
 
-        # Recalcula a Nota Geral (assumindo que é a soma das notas individuais)
+        # Recalcula a Nota Geral para cada universidade após as variações
+        # Assumindo que 'Nota' é a soma das notas individuais para simplificar.
+        # Se o cálculo for diferente, ajustar aqui.
         df_simulated_edicao.loc[uni_idx, 'Nota'] = df_simulated_edicao.loc[uni_idx, notas_cols_base_list].sum()
 
-    # --- Preparação dos dados para o modelo XGBoost ---
-    # 1. Calcular features de diferença e percentual de mudança (Edição 7 vs Edição 6)
-    # df_base_edicao_6 já tem os dados da Edição 6.
-    # df_simulated_edicao tem os dados da Edição 7 (simulados).
 
-    # Para cada universidade, precisamos calcular a diferença e o pct_change
-    # entre a Edição 6 (original) e a Edição 7 (simulada) para as features que o modelo espera.
-    # Isso é um pouco complexo, pois o modelo espera '_prev' (em relação à edição anterior),
-    # e aqui estamos simulando a 'próxima' edição.
-    # A forma mais robusta é garantir que df_simulated_edicao contenha todas as colunas
-    # que o modelo espera, incluindo as 'Posição em X' e as 'Estado_Y', 'Pública ou Privada_Z'.
+    # --- Preparação para o Modelo ---
+    # 1. Calcular features de diferença e percentual de mudança para a Edição 7 (simulada) em relação à Edição 6 (base)
+    # Isso é crucial para o modelo XGBoost que espera essas features.
+    df_simulated_edicao_processed = df_simulated_edicao.copy()
 
-    # Para simplificar e resolver o 'feature_names mismatch' imediatamente:
-    # Vamos criar um DataFrame com as colunas que o modelo espera, preenchendo com valores
-    # da Edição 6 e ajustando as notas da UFPE e outras conforme a simulação.
+    # Merge com os dados da Edição 6 para calcular as diferenças e % de mudança
+    df_simulated_edicao_processed = pd.merge(
+        df_simulated_edicao_processed,
+        df_base_edicao_6[['Universidade', 'Ranking'] + notas_cols_base_list + posicao_cols_base_list + ['Nota']],
+        on='Universidade',
+        suffixes=('', '_prev')
+    )
 
-    # Garantir que df_simulated_edicao tenha todas as colunas necessárias para o modelo
-    # (Posições, Estado, Pública ou Privada, e as features _diff_prev, _pct_change_prev)
+    # Calcula as features _diff_prev e _pct_change_prev
+    for col in ['Ranking'] + notas_cols_base_list + posicao_cols_base_list + ['Nota']:
+        if f'{col}_prev' in df_simulated_edicao_processed.columns:
+            df_simulated_edicao_processed[f'{col}_diff_prev'] = df_simulated_edicao_processed[col] - df_simulated_edicao_processed[f'{col}_prev']
+            # Evita divisão por zero
+            df_simulated_edicao_processed[f'{col}_pct_change_prev'] = df_simulated_edicao_processed.apply(
+                lambda row: (row[col] - row[f'{col}_prev']) / row[f'{col}_prev'] if row[f'{col}_prev'] != 0 else 0, axis=1
+            )
+        else:
+            # Se a coluna _prev não existe (ex: para a primeira edição), preenche com 0
+            df_simulated_edicao_processed[f'{col}_diff_prev'] = 0
+            df_simulated_edicao_processed[f'{col}_pct_change_prev'] = 0
 
-    # Adicionar colunas de Posição (se não existirem, ou recalcular se as notas mudaram)
-    # Por simplicidade, vamos assumir que as posições são calculadas com base nas notas.
-    # Se o modelo usa posições, elas precisam ser geradas.
-    # Se o seu modelo foi treinado com 'Posição em Ensino', etc., e você só tem 'Nota em Ensino',
-    # você precisará de uma lógica para calcular essas posições a partir das notas.
-    # Por enquanto, vamos copiar as posições da Edição 6 e ajustá-las se necessário.
-    for col in posicao_cols_base_list:
-        if col not in df_simulated_edicao.columns:
-            df_simulated_edicao[col] = df_base_edicao_6[col] # Copia da edição base
+    # 2. Aplicar One-Hot Encoding para 'Estado' e 'Pública ou Privada'
+    # É importante que as colunas geradas aqui sejam as mesmas que o modelo esperava.
+    # Vamos criar todas as colunas possíveis que o modelo pode ter visto, preenchendo com 0 se não existirem.
+    # Primeiro, identificamos as colunas de estado e pública/privada esperadas pelo modelo.
+    state_features = [f for f in model_expected_features if f.startswith('Estado_')]
+    public_private_features = [f for f in model_expected_features if f.startswith('Pública ou Privada_')]
 
-    # Adicionar colunas categóricas (Estado, Pública ou Privada)
-    # Primeiro, garantir que as colunas originais 'Estado' e 'Pública ou Privada' existam
-    if 'Estado' not in df_simulated_edicao.columns:
-        df_simulated_edicao['Estado'] = df_base_edicao_6['Estado']
-    if 'Pública ou Privada' not in df_simulated_edicao.columns:
-        df_simulated_edicao['Pública ou Privada'] = df_base_edicao_6['Pública ou Privada']
+    # Aplica One-Hot Encoding para as colunas categóricas
+    df_simulated_edicao_processed = pd.get_dummies(df_simulated_edicao_processed, columns=['Estado', 'Pública ou Privada'], drop_first=False)
 
-    # Criar um DataFrame para o One-Hot Encoding
-    df_ohe = pd.get_dummies(df_simulated_edicao[['Estado', 'Pública ou Privada']], prefix=['Estado', 'Pública ou Privada'])
-    df_simulated_edicao_processed = pd.concat([df_simulated_edicao.drop(columns=['Estado', 'Pública ou Privada']), df_ohe], axis=1)
+    # Garante que todas as colunas de estado e pública/privada esperadas pelo modelo existam, preenchendo com 0
+    for feature in state_features + public_private_features:
+        if feature not in df_simulated_edicao_processed.columns:
+            df_simulated_edicao_processed[feature] = 0
 
-    # Calcular as features _diff_prev e _pct_change_prev
-    # Estas features são calculadas em relação à Edição 6 (df_base_edicao_6)
-    # É crucial que as colunas de df_base_edicao_6 e df_simulated_edicao estejam alinhadas pela 'Universidade'
-    df_merged = pd.merge(df_base_edicao_6[['Universidade', 'Ranking'] + notas_cols_base_list + posicao_cols_base_list],
-                         df_simulated_edicao_processed[['Universidade', 'Ranking'] + notas_cols_base_list + posicao_cols_base_list],
-                         on='Universidade', suffixes=('_prev', ''))
-
-    # Calcula as diferenças e percentuais de mudança
-    features_to_diff_pct = ['Ranking'] + notas_cols_base_list + posicao_cols_base_list
-    for feature in features_to_diff_pct:
-        df_merged[f'{feature}_diff_prev'] = df_merged[feature] - df_merged[f'{feature}_prev']
-        df_merged[f'{feature}_pct_change_prev'] = (df_merged[feature] - df_merged[f'{feature}_prev']) / df_merged[f'{feature}_prev'].replace(0, np.nan) # Evita divisão por zero
-        df_merged[f'{feature}_pct_change_prev'] = df_merged[f'{feature}_pct_change_prev'].fillna(0) # Preenche NaN com 0
-
-    # Adicionar essas novas features ao df_simulated_edicao_processed
-    df_simulated_edicao_processed = pd.merge(df_simulated_edicao_processed,
-                                             df_merged[['Universidade'] + [col for col in df_merged.columns if '_diff_prev' in col or '_pct_change_prev' in col]],
-                                             on='Universidade', how='left')
-
-    # Garantir que todas as colunas esperadas pelo modelo existam, preenchendo com 0 se necessário
+    # 3. Selecionar e ordenar as colunas para a previsão
+    # Garante que X_simulated tenha EXATAMENTE as mesmas colunas e na mesma ordem que o modelo espera.
+    # Se alguma feature esperada pelo modelo não foi gerada, ela será adicionada com 0.
     for feature in model_expected_features:
         if feature not in df_simulated_edicao_processed.columns:
-            df_simulated_edicao_processed[feature] = 0.0 # Preenche com 0, pode precisar de ajuste dependendo da feature
+            df_simulated_edicao_processed[feature] = 0.0 # Preenche com 0.0 para features numéricas
 
-    # Alinhar as colunas de X_simulated com as features esperadas pelo modelo
+    # 4. Fazer a previsão
     X_simulated = df_simulated_edicao_processed[model_expected_features]
 
-    # Fazer a previsão
-    predicted_ranking = model.predict(X_simulated)
-    df_simulated_edicao['Simulated_Ranking'] = predicted_ranking
+    try:
+        predicted_ranking = model.predict(X_simulated)
+        df_simulated_edicao['Simulated_Ranking'] = predicted_ranking
+    except Exception as e:
+        st.error(f"Erro ao realizar a previsão do ranking com o modelo: {e}. Verifique se as features de entrada correspondem às features esperadas pelo modelo.")
+        st.exception(e)
+        st.stop()
 
     # Ordenar pelo ranking simulado
     df_simulated_edicao = df_simulated_edicao.sort_values(by='Simulated_Ranking').reset_index(drop=True)
@@ -167,90 +158,124 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
 
     return df_simulated_edicao
 
-# --- Início do Aplicativo Streamlit ---
-st.title("Simulador de Ranking RUF para a UFPE")
-
-# Carregar modelo e dados
+# --- Execução Principal ---
+st.success("DEBUG: 1. Model and data loading functions called.")
 loaded_model = load_model(model_path)
 df_full = load_data(input_file_path)
+st.success("DEBUG: 2. Model and data loaded successfully and checked.")
 
-# Verificar se o modelo e os dados foram carregados com sucesso
+# Verifica se o modelo e os dados foram carregados
 if loaded_model is None or df_full.empty:
-    st.error("Não foi possível carregar o modelo ou os dados. Verifique os logs para mais detalhes.")
+    st.error("Erro crítico: Modelo ou dados não puderam ser carregados. Verifique os logs acima.")
     st.stop()
 
-st.success("DEBUG: Modelo e dados carregados e verificados.")
-
-# Extrair as features esperadas pelo modelo (do próprio modelo)
+# Tenta obter as features esperadas pelo modelo
 try:
-    model_expected_features = loaded_model.get_booster().feature_names
-    if not model_expected_features:
-        st.error("O modelo carregado não possui 'feature_names'. Não é possível prosseguir.")
+    model_expected_features = loaded_model.feature_names_in_
+    if model_expected_features is None:
+        st.error("Erro: Não foi possível obter as feature_names_in_ do modelo. O modelo pode não ter sido treinado com essa propriedade.")
         st.stop()
-    st.success(f"DEBUG: Features esperadas pelo modelo extraídas. Total: {len(model_expected_features)}")
+    st.success(f"DEBUG: Features esperadas pelo modelo obtidas. Total: {len(model_expected_features)}")
 except Exception as e:
-    st.error(f"Erro ao extrair feature_names do modelo: {e}")
+    st.error(f"Erro ao tentar obter as feature_names_in_ do modelo: {e}. O modelo pode não ter sido treinado com essa propriedade.")
     st.exception(e)
     st.stop()
 
 
-# Encontrar a última edição disponível nos dados
+# --- Processamento de Dados ---
+st.success("DEBUG: 3. Latest edition determined.")
 latest_edition = df_full['Edicao_RUF'].max()
-st.success(f"DEBUG: Última edição encontrada: {latest_edition}")
 
-# Filtrar dados da última edição para usar como base
+st.success(f"DEBUG: 4. Data for latest edition ({latest_edition}) extracted. Total: {len(df_full[df_full['Edicao_RUF'] == latest_edition])} universities.")
 df_edicao_6 = df_full[df_full['Edicao_RUF'] == latest_edition].copy()
-if df_edicao_6.empty:
-    st.error(f"Não foram encontrados dados para a Edição {latest_edition}. Verifique o arquivo de dados.")
+
+st.success("DEBUG: Dados da UFPE para a Edição 6 extraídos.")
+ufpe_data_ed6_check = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name]
+if ufpe_data_ed6_check.empty:
+    st.error(f"Erro: Não foi possível encontrar a '{ufpe_exact_name}' na Edição {latest_edition} dos dados. Verifique o nome da universidade ou os dados.")
     st.stop()
-st.success(f"DEBUG: Dados da Edição {latest_edition} extraídos. {len(df_edicao_6)} universidades.")
+original_ufpe_ed6 = ufpe_data_ed6_check.iloc[0]
 
-# Extrair dados da UFPE para a última edição
-original_ufpe_ed6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name]
-if original_ufpe_ed6.empty:
-    st.error(f"A universidade '{ufpe_exact_name}' não foi encontrada na Edição {latest_edition}. Verifique o nome ou os dados.")
-    st.stop()
-original_ufpe_ed6 = original_ufpe_ed6.iloc[0]
-st.success(f"DEBUG: Dados da UFPE para a Edição {latest_edition} extraídos.")
+st.success("DEBUG: Tendências médias para outras universidades calculadas.")
+# Cálculo das Tendências Médias para Outras Universidades
+# Exclui a UFPE do cálculo das tendências médias
+df_others = df_full[df_full['Universidade'] != ufpe_exact_name].copy()
 
-# Cálculo das Tendências Médias para Outras Universidades (se aplicável)
-# Esta lógica precisa ser robusta para o caso de não haver edições anteriores suficientes
-try:
-    if latest_edition > 1:
-        df_prev_edition = df_full[df_full['Edicao_RUF'] == latest_edition - 1].copy()
-        if not df_prev_edition.empty:
-            df_merged_trends = pd.merge(df_prev_edition[['Universidade', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']],
-                                        df_edicao_6[['Universidade', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']],
-                                        on='Universidade', suffixes=('_prev', ''))
+# Calcula a variação percentual entre a penúltima e a última edição para as outras universidades
+# Assumindo que 'latest_edition - 1' é a penúltima edição
+df_penultima_edicao = df_others[df_others['Edicao_RUF'] == latest_edition - 1].set_index('Universidade')
+df_ultima_edicao = df_others[df_others['Edicao_RUF'] == latest_edition].set_index('Universidade')
 
-            # Calcular percentual de mudança para cada nota
-            for col in ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']:
-                df_merged_trends[f'{col}_pct_change_prev'] = (df_merged_trends[col] - df_merged_trends[f'{col}_prev']) / df_merged_trends[f'{col}_prev'].replace(0, np.nan)
-                df_merged_trends[f'{col}_pct_change_prev'] = df_merged_trends[f'{col}_pct_change_prev'].fillna(0)
+# Colunas para calcular a tendência
+cols_to_trend = ['Ranking', 'Nota', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização',
+                 'Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização']
 
-            average_trends = df_merged_trends.set_index('Universidade')
-            st.success("DEBUG: Tendências médias para outras universidades calculadas.")
-        else:
-            average_trends = pd.DataFrame() # DataFrame vazio se não houver edição anterior
-            st.warning("DEBUG: Não há dados da edição anterior para calcular tendências médias.")
+average_trends = pd.DataFrame(index=df_ultima_edicao.index)
+
+for col in cols_to_trend:
+    if col in df_penultima_edicao.columns and col in df_ultima_edicao.columns:
+        # Calcula a diferença
+        average_trends[f'{col}_diff_prev'] = df_ultima_edicao[col] - df_penultima_edicao[col]
+        # Calcula a variação percentual, evitando divisão por zero
+        average_trends[f'{col}_pct_change_prev'] = df_ultima_edicao.apply(
+            lambda row: (row[col] - df_penultima_edicao.loc[row.name, col]) / df_penultima_edicao.loc[row.name, col] if df_penultima_edicao.loc[row.name, col] != 0 else 0, axis=1
+        )
     else:
-        average_trends = pd.DataFrame() # DataFrame vazio se for a primeira edição
-        st.warning("DEBUG: Não há edições anteriores para calcular tendências médias.")
+        # Se a coluna não existe em uma das edições, preenche com 0
+        average_trends[f'{col}_diff_prev'] = 0
+        average_trends[f'{col}_pct_change_prev'] = 0
+
+# --- Interface do Streamlit ---
+st.title("Simulador de Ranking RUF para a UFPE")
+
+st.success("DEBUG: 5. Preparing UFPE summary table.")
+# Prepara os dados da UFPE para exibição na tabela resumo
+try:
+    original_ufpe_ed6_display = pd.DataFrame({
+        'Métrica': ['Ranking', 'Nota Geral', 'Ensino', 'Pesquisa', 'Mercado', 'Inovação', 'Internacionalização'],
+        'Valor': [
+            f"#{int(original_ufpe_ed6['Ranking'])}",
+            f"{original_ufpe_ed6['Nota']:.2f}",
+            f"{original_ufpe_ed6['Nota em Ensino']:.2f}",
+            f"{original_ufpe_ed6['Nota em Pesquisa']:.2f}",
+            f"{original_ufpe_ed6['Nota em Mercado']:.2f}",
+            f"{original_ufpe_ed6['Nota em Inovação']:.2f}",
+            f"{original_ufpe_ed6['Nota em Internacionalização']:.2f}"
+        ]
+    })
+    st.success("DEBUG: 6. UFPE summary table data prepared.")
 except Exception as e:
-    st.error(f"Erro ao calcular tendências médias: {e}")
+    st.error(f"Erro ao preparar os dados da UFPE para exibição: {e}. Verifique se as colunas esperadas existem e contêm valores válidos.")
     st.exception(e)
     st.stop()
 
+st.subheader(f"Desempenho da UFPE na Edição {get_year_from_edition(latest_edition)} (Original)")
+st.dataframe(original_ufpe_ed6_display, hide_index=True)
+st.success("DEBUG: 7. UFPE summary table displayed.")
 
-st.sidebar.header(f"Simulação para Edição {get_year_from_edition(latest_edition + 1)}")
+st.sidebar.header("Ajustar Variações para a UFPE (Edição Simulada)")
 
-pct_change_ensino = st.sidebar.slider("Ensino (%)", -10.0, 10.0, 0.0, 0.1) / 100
-pct_change_pesquisa = st.sidebar.slider("Pesquisa (%)", -10.0, 10.0, 0.0, 0.1) / 100
-pct_change_mercado = st.sidebar.slider("Mercado (%)", -10.0, 10.0, 0.0, 0.1) / 100
-pct_change_inovacao = st.sidebar.slider("Inovação (%)", -10.0, 10.0, 0.0, 0.1) / 100
-pct_change_internacionalizacao = st.sidebar.slider("Internacionalização (%)", -10.0, 10.0, 0.0, 0.1) / 100
+# Inicializa st.session_state para sliders e checkbox
+if 'pct_change_ensino' not in st.session_state:
+    st.session_state.pct_change_ensino = 0.0
+if 'pct_change_pesquisa' not in st.session_state:
+    st.session_state.pct_change_pesquisa = 0.0
+if 'pct_change_mercado' not in st.session_state:
+    st.session_state.pct_change_mercado = 0.0
+if 'pct_change_inovacao' not in st.session_state:
+    st.session_state.pct_change_inovacao = 0.0
+if 'pct_change_internacionalizacao' not in st.session_state:
+    st.session_state.pct_change_internacionalizacao = 0.0
+if 'apply_other_uni_trends' not in st.session_state:
+    st.session_state.apply_other_uni_trends = True
 
-apply_other_uni_trends = st.sidebar.checkbox("Aplicar tendências médias a outras universidades", value=True)
+pct_change_ensino = st.sidebar.slider("Ensino (%)", -10.0, 10.0, st.session_state.pct_change_ensino, 0.1) / 100
+pct_change_pesquisa = st.sidebar.slider("Pesquisa (%)", -10.0, 10.0, st.session_state.pct_change_pesquisa, 0.1) / 100
+pct_change_mercado = st.sidebar.slider("Mercado (%)", -10.0, 10.0, st.session_state.pct_change_mercado, 0.1) / 100
+pct_change_inovacao = st.sidebar.slider("Inovação (%)", -10.0, 10.0, st.session_state.pct_change_inovacao, 0.1) / 100
+pct_change_internacionalizacao = st.sidebar.slider("Internacionalização (%)", -10.0, 10.0, st.session_state.pct_change_internacionalizacao, 0.1) / 100
+
+apply_other_uni_trends = st.sidebar.checkbox("Aplicar tendências médias a outras universidades", value=st.session_state.apply_other_uni_trends)
 
 if st.sidebar.button("Resetar Variações"):
     st.session_state.pct_change_ensino = 0.0
@@ -277,7 +302,7 @@ if st.button("Executar Simulação"):
 
         st.subheader("Comparativo UFPE: Edição 6 (Original) vs. Edição 7 (Simulada)")
         comparison_df = pd.DataFrame({
-            'Métrica': ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota Geral'],
+            'Métrica': ['Ranking', 'Nota Geral', 'Ensino', 'Pesquisa', 'Mercado', 'Inovação', 'Internacionalização'],
             f'Edição {get_year_from_edition(latest_edition)} (Original)': [
                 original_ufpe_ed6['Ranking'],
                 original_ufpe_ed6['Nota em Ensino'],
