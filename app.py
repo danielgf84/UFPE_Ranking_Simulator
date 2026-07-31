@@ -24,9 +24,9 @@ target_column = 'Ranking'
 @st.cache_resource # Usa o cache do Streamlit para carregar o modelo apenas uma vez
 def load_model(path):
     try:
-        # st.write(f"Tentando carregar modelo de: {path}") # DEBUG: Descomente para depurar
+        # st.write(f"DEBUG: Tentando carregar modelo de: {path}") # Descomente para depurar
         model = joblib.load(path)
-        # st.write("Modelo carregado com sucesso.") # DEBUG: Descomente para depurar
+        # st.write("DEBUG: Modelo carregado com sucesso.") # Descomente para depurar
         return model
     except Exception as e:
         st.error(f"Erro ao carregar o modelo: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
@@ -35,10 +35,10 @@ def load_model(path):
 @st.cache_data # Usa o cache do Streamlit para carregar os dados apenas uma vez
 def load_data(path):
     try:
-        # st.write(f"Tentando carregar dados de: {path}") # DEBUG: Descomente para depurar
+        # st.write(f"DEBUG: Tentando carregar dados de: {path}") # Descomente para depurar
         df = pd.read_excel(path)
-        # st.write(f"Dados carregados com sucesso. Shape: {df.shape}") # DEBUG: Descomente para depurar
-        # st.write("Colunas do DataFrame carregado:", df.columns.tolist()) # DEBUG: Descomente para depurar
+        # st.write(f"DEBUG: Dados carregados com sucesso. Shape: {df.shape}") # Descomente para depurar
+        # st.write("DEBUG: Colunas do DataFrame carregado:", df.columns.tolist()) # Descomente para depurar
         return df
     except Exception as e:
         st.error(f"Erro ao carregar os dados: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
@@ -50,7 +50,7 @@ df_model = load_data(input_file_path)
 
 # Verifica se o modelo e os dados foram carregados com sucesso
 if loaded_model is None or df_model.empty:
-    st.error("Não foi possível carregar o modelo ou os dados. A aplicação não pode continuar.")
+    st.error("Não foi possível carregar o modelo ou os dados. A aplicação não pode continuar. Por favor, verifique os logs para mais detalhes.")
     st.stop() # Para a execução do Streamlit se houver erro
 
 # --- Preparação dos Dados (similar aos Blocos 2 e 3 do notebook) ---
@@ -66,7 +66,7 @@ df_edicao_5 = df_model[df_model['Edicao_RUF'] == 5].copy()
 ufpe_data_edicao_6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name].copy()
 
 if ufpe_data_edicao_6.empty:
-    st.error(f"Erro: A universidade '{ufpe_exact_name}' não foi encontrada na Edição 6. Verifique o nome ou os dados.")
+    st.error(f"Erro: A universidade '{ufpe_exact_name}' não foi encontrada na Edição 6. Verifique o nome ou os dados no arquivo Excel.")
     st.stop()
 
 # Identifica as colunas que são features para o modelo
@@ -202,7 +202,8 @@ def simulate_full_ranking_avg_trend(
     # Gerar o ranking final
     df_simulated_edicao['Simulated_Ranking'] = df_simulated_edicao['Predicted_Ranking'].rank(method='min', ascending=True).astype(int)
 
-    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + notas_cols_input.keys()]
+    # CORREÇÃO AQUI: Convertendo dict_keys para list antes de concatenar
+    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + list(notas_cols_input.keys())]
 
 
 # --- 3. Interface do Streamlit ---
@@ -212,24 +213,49 @@ st.set_page_config(layout="wide", page_title="Simulador de Ranking RUF UFPE")
 st.title("📊 Simulador de Ranking RUF - UFPE")
 st.markdown("Preveja o impacto de mudanças nas notas da UFPE no Ranking Universitário Folha (RUF).")
 
+# --- Quadro Resumo com Notas Atuais da UFPE (Edição 6) ---
+st.subheader("Notas Atuais da UFPE (Edição 6)")
+
+# Seleciona as colunas de interesse para o resumo
+cols_to_display = ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']
+ufpe_current_notes = ufpe_data_edicao_6[cols_to_display].iloc[0]
+
+# Cria um DataFrame para exibir de forma mais amigável
+summary_df = pd.DataFrame({
+    'Métrica': ufpe_current_notes.index,
+    'Valor (Edição 6)': ufpe_current_notes.values
+})
+st.dataframe(summary_df.set_index('Métrica'))
+st.markdown("---") # Adiciona um separador visual
+
 st.header("Configurações de Simulação para a UFPE (Edição 7)")
 st.markdown("Ajuste as variações percentuais para as notas da UFPE na próxima edição do RUF.")
 
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    pct_ensino = st.slider("Variação % em Ensino", -0.20, 0.20, 0.00, 0.01, format="%.2f")
-    pct_pesquisa = st.slider("Variação % em Pesquisa", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+    # Ajustado para exibir como porcentagem e converter para decimal na simulação
+    pct_ensino_display = st.slider("Variação % em Ensino", -20, 20, 0, 1, format="%.0f%%")
+    pct_pesquisa_display = st.slider("Variação % em Pesquisa", -20, 20, 0, 1, format="%.0f%%")
 
 with col2:
-    pct_mercado = st.slider("Variação % em Mercado", -0.20, 0.20, 0.00, 0.01, format="%.2f")
-    pct_inovacao = st.slider("Variação % em Inovação", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+    # Ajustado para exibir como porcentagem e converter para decimal na simulação
+    pct_mercado_display = st.slider("Variação % em Mercado", -20, 20, 0, 1, format="%.0f%%")
+    pct_inovacao_display = st.slider("Variação % em Inovação", -20, 20, 0, 1, format="%.0f%%")
 
 with col3:
-    pct_internacionalizacao = st.slider("Variação % em Internacionalização", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+    # Ajustado para exibir como porcentagem e converter para decimal na simulação
+    pct_internacionalizacao_display = st.slider("Variação % em Internacionalização", -20, 20, 0, 1, format="%.0f%%")
 
 if st.button("Executar Simulação"):
     st.subheader("Resultados da Simulação (Edição 7)")
+
+    # Converte os valores dos sliders para decimais antes de passar para a função de simulação
+    pct_ensino = pct_ensino_display / 100
+    pct_pesquisa = pct_pesquisa_display / 100
+    pct_mercado = pct_mercado_display / 100
+    pct_inovacao = pct_inovacao_display / 100
+    pct_internacionalizacao = pct_internacionalizacao_display / 100
 
     # Executa a simulação
     df_simulated_results = simulate_full_ranking_avg_trend(
