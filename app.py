@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import joblib
 import numpy as np
-import altair as alt # Importa Altair para gráficos
+import altair as alt # Adicionado para gráficos
 
 # --- 1. Configuração e Carregamento de Recursos ---
 # O caminho para a sua pasta 'data' no repositório GitHub
@@ -33,36 +33,170 @@ EDITION_YEAR_MAP = {
 
 # Função auxiliar para obter o ano da edição
 def get_year_from_edition(edition_number):
-    return EDITION_YEAR_MAP.get(edition_number, f"Ano Desconhecido.._other - original_note_other
+    # VERIFIQUE ESTA LINHA COM MUITO CUIDADO AO COPIAR E COLAR!
+    # Certifique-se de que a aspa dupla final (") está presente.
+    return EDITION_YEAR_MAP.get(edition_number, f"Ano Desconhecido (Edição {edition_number})")
+
+
+# --- Funções de Carregamento (com cache para Streamlit) ---
+
+@st.cache_resource # Usa o cache do Streamlit para carregar o modelo apenas uma vez
+def load_model(path):
+    try:
+        # st.write(f"DEBUG: Tentando carregar modelo de: {path}") # Descomente para depurar
+        model = joblib.load(path)
+        # st.write("DEBUG: Modelo carregado com sucesso.") # Descomente para depurar
+        return model
+    except Exception as e:
+        st.error(f"Erro ao carregar o modelo: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
+        return None
+
+@st.cache_data # Usa o cache do Streamlit para carregar os dados apenas uma vez
+def load_data(path):
+    try:
+        # st.write(f"DEBUG: Tentando carregar dados de: {path}") # Descomente para depurar
+        df = pd.read_excel(path)
+        # st.write(f"DEBUG: Dados carregados com sucesso. Shape: {df.shape}") # Descomente para depurar
+        # st.write("DEBUG: Colunas do DataFrame carregado:", df.columns.tolist()) # Descomente para depurar
+        return df
+    except Exception as e:
+        st.error(f"Erro ao carregar os dados: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
+        return pd.DataFrame()
+
+# Carrega o modelo e os dados
+loaded_model = load_model(model_path)
+df_model = load_data(input_file_path)
+
+# Verifica se o modelo e os dados foram carregados com sucesso
+if loaded_model is None or df_model.empty:
+    st.error("Não foi possível carregar o modelo ou os dados. A aplicação não pode continuar. Por favor, verifique os logs para mais detalhes.")
+    st.stop() # Para a execução do Streamlit se houver erro
+
+# --- Preparação dos Dados (similar aos Blocos 2 e 3 do notebook) ---
+
+# Verifica se a coluna 'Edicao_RUF' existe antes de tentar usá-la
+if 'Edicao_RUF' not in df_model.columns:
+    st.error("Erro: A coluna 'Edicao_RUF' não foi encontrada no DataFrame carregado. Verifique o arquivo Excel.")
+    st.stop()
+
+df_edicao_6 = df_model[df_model['Edicao_RUF'] == 6].copy()
+df_edicao_5 = df_model[df_model['Edicao_RUF'] == 5].copy()
+
+ufpe_data_edicao_6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name].copy()
+
+if ufpe_data_edicao_6.empty:
+    st.error(f"Erro: A universidade '{ufpe_exact_name}' não foi encontrada na Edição 6. Verifique o nome ou os dados no arquivo Excel.")
+    st.stop()
+
+# Identifica as colunas que são features para o modelo
+features = [col for col in df_model.columns if col not in ['Universidade', 'is_UFPE', 'Edicao_RUF', target_column]]
+
+# --- Cálculo das Tendências Médias para Outras Universidades ---
+# (Copiado do Bloco 3 do notebook)
+notas_cols_base_list = ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']
+trend_pct_change_cols = [f'{col}_pct_change_prev' for col in notas_cols_base_list]
+
+# Exclui a UFPE do cálculo das tendências médias
+df_other_universities = df_model[df_model['Universidade'] != ufpe_exact_name].copy()
+
+# Calcula as variações percentuais para todas as edições e universidades
+for col_base in notas_cols_base_list:
+    if col_base in df_other_universities.columns:
+        # Garante que o cálculo de pct_change é feito por universidade e ordenado por edição
+        df_other_universities[f'{col_base}_pct_change_prev'] = df_other_universities.groupby('Universidade')[col_base].pct_change()
+    else:
+        st.warning(f"Coluna '{col_base}' não encontrada para cálculo de tendência. Será ignorada.")
+        df_other_universities[f'{col_base}_pct_change_prev'] = 0.0
+
+# Filtra as colunas de tendência que realmente existem no DataFrame
+existing_trend_pct_change_cols = [col for col in trend_pct_change_cols if col in df_other_universities.columns]
+
+# Calcula a média dessas variações por universidade
+average_trends = df_other_universities.groupby('Universidade')[existing_trend_pct_change_cols].mean()
+
+# Preenche quaisquer NaNs restantes com 0 (para universidades com histórico incompleto)
+average_trends = average_trends.fillna(0)
+
+
+# --- Função de Simulação ---
+def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, average_trends_df,
+                                    pct_change_ensino, pct_change_pesquisa, pct_change_mercado,
+                                    pct_change_inovacao, pct_change_internacionalizacao):
+
+    df_simulated_edicao = df_base_edicao_6.copy()
+    df_simulated_edicao['Edicao_RUF'] = 7 # Define a edição simulada como 7
+
+    # Dicionário com as variações percentuais da UFPE
+    ufpe_pct_changes = {
+        'Nota em Ensino': pct_change_ensino,
+        'Nota em Pesquisa': pct_change_pesquisa,
+        'Nota em Mercado': pct_change_mercado,
+        'Nota em Inovação': pct_change_inovacao,
+        'Nota em Internacionalização': pct_change_internacionalizacao
+    }
+
+    # Prepara o DataFrame para as features do modelo
+    df_simulated_edicao['is_UFPE'] = (df_simulated_edicao['Universidade'] == ufpe_name).astype(int)
+
+    # Aplica as variações para a UFPE e as tendências médias para as outras universidades
+    for uni_idx, uni_row in df_simulated_edicao.iterrows():
+        if uni_row['Universidade'] == ufpe_name:
+            # Aplica as variações da UFPE (definidas pelos sliders)
+            for col_base, pct_change_val in ufpe_pct_changes.items():
+                original_note_ufpe = uni_row[col_base] # Usar uni_row diretamente
+                new_note_ufpe = original_note_ufpe * (1 + pct_change_val)
+                df_simulated_edicao.loc[uni_idx, col_base] = new_note_ufpe
+        else:
+            # Aplica as tendências médias para as outras universidades
+            # original_uni_notes_ed6 = df_base_edicao_6.loc[uni_idx].copy() # Notas originais da Edição 6
+
+            # Itera sobre as colunas de notas base
+            for col_base in ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']:
+                # col_pct_change_prev = f'{col_base}_pct_change_prev'
+                # # Tenta obter a tendência média para esta universidade e dimensão
+                # if uni_row['Universidade'] in average_trends_df.index and col_pct_change_prev in average_trends_df.columns:
+                #     trend_pct_change = average_trends_df.loc[uni_row['Universidade'], col_pct_change_prev]
+                # else:
+                #     trend_pct_change = 0.0 # Se não houver tendência média, assume 0% de mudança
+
+                trend_pct_change = 0.0 # <--- TEMPORÁRIO: Força 0% de mudança para outras universidades para depuração
+
+                original_note_other = uni_row[col_base] # Usar uni_row diretamente
+                new_note_other = original_note_other * (1 + trend_pct_change)
+                df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
+
+                # Recalcular as colunas _diff_prev e _pct_change_prev para outras universidades
+                df_simulated_edicao.loc[uni_idx, f'{col_base}_diff_prev'] = new_note_other - original_note_other
                 if original_note_other != 0:
                     df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = (new_note_other - original_note_other) / original_note_other
                 else:
                     df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = 0.0
 
-            # Recalcular a Nota Geral e suas variações para as outras universidades
-            original_overall_note_uni_ed6 = original_uni_notes_ed6['Nota']
-            new_overall_note_uni_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
-            df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_uni_simulated
+        # Recalcular a Nota Geral e suas variações para todas as universidades (UFPE e outras)
+        original_overall_note_uni_ed6 = uni_row['Nota']
+        new_overall_note_uni_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
+        df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_uni_simulated
 
-            df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_uni_simulated - original_overall_note_uni_ed6
-            if original_overall_note_uni_ed6 != 0:
-                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_uni_simulated - original_overall_note_uni_ed6) / original_overall_note_uni_ed6
-            else:
-                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
+        df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_uni_simulated - original_overall_note_uni_ed6
+        if original_overall_note_uni_ed6 != 0:
+            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_uni_simulated - original_overall_note_uni_ed6) / original_overall_note_uni_ed6
+        else:
+            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
 
-    # Prever o ranking para a edição simulada
+
+    # Previsão do Ranking usando o modelo
     X_simulated = df_simulated_edicao[features]
     df_simulated_edicao['Predicted_Ranking'] = model.predict(X_simulated)
 
-    # Gerar o ranking final
+    # Cálculo do Ranking Final (relativo)
+    # Quanto menor o Predicted_Ranking, melhor a posição (ascendente=True)
     df_simulated_edicao['Simulated_Ranking'] = df_simulated_edicao['Predicted_Ranking'].rank(method='min', ascending=True).astype(int)
 
-    # CORREÇÃO AQUI: Convertendo dict_keys para list antes de concatenar
-    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + list(ufpe_pct_changes.keys())]
+    # Retorna apenas as colunas relevantes para exibição
+    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + [col for col in ufpe_pct_changes.keys()]]
 
 
 # --- 3. Interface do Streamlit ---
-
 st.set_page_config(layout="wide", page_title="Simulador de Ranking RUF UFPE")
 
 st.title("📊 Simulador de Ranking RUF - UFPE")
