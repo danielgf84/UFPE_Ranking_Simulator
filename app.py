@@ -5,7 +5,8 @@ import joblib
 import numpy as np
 
 # --- 1. Configuração e Carregamento de Recursos ---
-# O caminho para a sua pasta 'data' no Google Drive
+# O caminho para a sua pasta 'data' no repositório GitHub
+# ATENÇÃO: Este caminho é relativo à raiz do seu repositório no Streamlit Cloud
 data_path = 'data'
 
 # Caminho completo para o arquivo do modelo XGBoost
@@ -23,24 +24,24 @@ target_column = 'Ranking'
 @st.cache_resource # Usa o cache do Streamlit para carregar o modelo apenas uma vez
 def load_model(path):
     try:
-        st.write(f"Tentando carregar modelo de: {path}") # DEBUG
+        # st.write(f"Tentando carregar modelo de: {path}") # DEBUG: Descomente para depurar
         model = joblib.load(path)
-        st.write("Modelo carregado com sucesso.") # DEBUG
+        # st.write("Modelo carregado com sucesso.") # DEBUG: Descomente para depurar
         return model
     except Exception as e:
-        st.error(f"Erro ao carregar o modelo: {e}")
+        st.error(f"Erro ao carregar o modelo: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
         return None
 
 @st.cache_data # Usa o cache do Streamlit para carregar os dados apenas uma vez
 def load_data(path):
     try:
-        st.write(f"Tentando carregar dados de: {path}") # DEBUG
+        # st.write(f"Tentando carregar dados de: {path}") # DEBUG: Descomente para depurar
         df = pd.read_excel(path)
-        st.write(f"Dados carregados com sucesso. Shape: {df.shape}") # DEBUG
-        st.write("Colunas do DataFrame carregado:", df.columns.tolist()) # DEBUG
+        # st.write(f"Dados carregados com sucesso. Shape: {df.shape}") # DEBUG: Descomente para depurar
+        # st.write("Colunas do DataFrame carregado:", df.columns.tolist()) # DEBUG: Descomente para depurar
         return df
     except Exception as e:
-        st.error(f"Erro ao carregar os dados: {e}")
+        st.error(f"Erro ao carregar os dados: {e}. Verifique se o arquivo '{os.path.basename(path)}' está na pasta 'data' do seu repositório.")
         return pd.DataFrame()
 
 # Carrega o modelo e os dados
@@ -49,7 +50,7 @@ df_model = load_data(input_file_path)
 
 # Verifica se o modelo e os dados foram carregados com sucesso
 if loaded_model is None or df_model.empty:
-    st.error("Não foi possível carregar o modelo ou os dados. Verifique os caminhos e arquivos.")
+    st.error("Não foi possível carregar o modelo ou os dados. A aplicação não pode continuar.")
     st.stop() # Para a execução do Streamlit se houver erro
 
 # --- Preparação dos Dados (similar aos Blocos 2 e 3 do notebook) ---
@@ -65,7 +66,7 @@ df_edicao_5 = df_model[df_model['Edicao_RUF'] == 5].copy()
 ufpe_data_edicao_6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name].copy()
 
 if ufpe_data_edicao_6.empty:
-    st.error(f"Erro: A universidade '{ufpe_exact_name}' não foi encontrada na Edição 6.")
+    st.error(f"Erro: A universidade '{ufpe_exact_name}' não foi encontrada na Edição 6. Verifique o nome ou os dados.")
     st.stop()
 
 # Identifica as colunas que são features para o modelo
@@ -188,5 +189,97 @@ def simulate_full_ranking_avg_trend(
         new_overall_note_uni_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
         df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_uni_simulated
 
-        df_simulated
+        df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_uni_simulated - original_overall_note_uni_ed6
+        if original_overall_note_uni_ed6 != 0:
+            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_uni_simulated - original_overall_note_uni_ed6) / original_overall_note_uni_ed6
+        else:
+            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
 
+    # Prever o ranking para a edição simulada
+    X_simulated = df_simulated_edicao[features]
+    df_simulated_edicao['Predicted_Ranking'] = model.predict(X_simulated)
+
+    # Gerar o ranking final
+    df_simulated_edicao['Simulated_Ranking'] = df_simulated_edicao['Predicted_Ranking'].rank(method='min', ascending=True).astype(int)
+
+    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + notas_cols_input.keys()]
+
+
+# --- 3. Interface do Streamlit ---
+
+st.set_page_config(layout="wide", page_title="Simulador de Ranking RUF UFPE")
+
+st.title("📊 Simulador de Ranking RUF - UFPE")
+st.markdown("Preveja o impacto de mudanças nas notas da UFPE no Ranking Universitário Folha (RUF).")
+
+st.header("Configurações de Simulação para a UFPE (Edição 7)")
+st.markdown("Ajuste as variações percentuais para as notas da UFPE na próxima edição do RUF.")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    pct_ensino = st.slider("Variação % em Ensino", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+    pct_pesquisa = st.slider("Variação % em Pesquisa", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+
+with col2:
+    pct_mercado = st.slider("Variação % em Mercado", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+    pct_inovacao = st.slider("Variação % em Inovação", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+
+with col3:
+    pct_internacionalizacao = st.slider("Variação % em Internacionalização", -0.20, 0.20, 0.00, 0.01, format="%.2f")
+
+if st.button("Executar Simulação"):
+    st.subheader("Resultados da Simulação (Edição 7)")
+
+    # Executa a simulação
+    df_simulated_results = simulate_full_ranking_avg_trend(
+        df_base_edicao_6=df_edicao_6,
+        model=loaded_model,
+        ufpe_name=ufpe_exact_name,
+        average_trends_df=average_trends,
+        pct_change_ensino=pct_ensino,
+        pct_change_pesquisa=pct_pesquisa,
+        pct_change_mercado=pct_mercado,
+        pct_change_inovacao=pct_inovacao,
+        pct_change_internacionalizacao=pct_internacionalizacao
+    )
+
+    # Exibe o ranking da UFPE
+    ufpe_simulated_ranking = df_simulated_results[df_simulated_results['Universidade'] == ufpe_exact_name]
+    st.write(f"**Ranking Simulador da UFPE:** Posição **#{ufpe_simulated_ranking['Simulated_Ranking'].iloc[0]}**")
+    st.dataframe(ufpe_simulated_ranking)
+
+    st.markdown("---")
+    st.subheader("Ranking Completo Simulador (Top 20)")
+    st.dataframe(df_simulated_results.sort_values('Simulated_Ranking').head(20))
+
+    st.markdown("---")
+    st.subheader("Comparativo UFPE (Edição 6 vs. Edição 7 Simulada)")
+    original_ufpe_ed6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name][['Universidade', 'Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']].iloc[0]
+    simulated_ufpe_ed7 = ufpe_simulated_ranking[['Universidade', 'Simulated_Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']].iloc[0]
+
+    comparison_df = pd.DataFrame({
+        'Métrica': ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota Geral'],
+        'Edição 6 (Original)': [
+            original_ufpe_ed6['Ranking'],
+            original_ufpe_ed6['Nota em Ensino'],
+            original_ufpe_ed6['Nota em Pesquisa'],
+            original_ufpe_ed6['Nota em Mercado'],
+            original_ufpe_ed6['Nota em Inovação'],
+            original_ufpe_ed6['Nota em Internacionalização'],
+            original_ufpe_ed6['Nota']
+        ],
+        'Edição 7 (Simulada)': [
+            simulated_ufpe_ed7['Simulated_Ranking'],
+            simulated_ufpe_ed7['Nota em Ensino'],
+            simulated_ufpe_ed7['Nota em Pesquisa'],
+            simulated_ufpe_ed7['Nota em Mercado'],
+            simulated_ufpe_ed7['Nota em Inovação'],
+            simulated_ufpe_ed7['Nota em Internacionalização'],
+            simulated_ufpe_ed7['Nota']
+        ]
+    })
+    st.dataframe(comparison_df.set_index('Métrica'))
+
+st.markdown("---")
+st.info("Este simulador utiliza um modelo de Machine Learning treinado com dados históricos do RUF para prever o ranking. As previsões são estimativas e não garantem resultados futuros.")
