@@ -12,7 +12,7 @@ from model_logic import (
     load_model as ml_load_model,
     load_data as ml_load_data,
     simulate_full_ranking_avg_trend,
-    calculate_average_trends, # Importa a função melhorada
+    calculate_average_trends,
     ufpe_exact_name,
     target_column,
     EDITION_YEAR_MAP,
@@ -20,7 +20,7 @@ from model_logic import (
 )
 
 # --- Configuração da Página Streamlit ---
-st.set_page_config(layout="wide", page_title="Simulador RUF UFPE")
+st.set_page_config(layout="wide", page_title="Simulador de Ranking RUF para a UFPE")
 
 # --- Definir Caminhos do Projeto para o ambiente de execução (GitHub/Streamlit Cloud) ---
 # __file__ é o caminho para o arquivo app.py.
@@ -38,6 +38,35 @@ input_file_name = 'ruf_consolidado_fe.xlsx'
 # Construir os caminhos completos para o modelo e os dados
 model_path = os.path.join(MODELS_PATH, model_file_name)
 input_file_path = os.path.join(DATA_PATH, input_file_name)
+
+# --- INÍCIO DO CÓDIGO DE DEPURACAO PARA VERIFICAR CAMINHOS E ARQUIVOS ---
+st.write(f"DEBUG: PROJECT_BASE_PATH: {PROJECT_BASE_PATH}")
+st.write(f"DEBUG: DATA_PATH: {DATA_PATH}")
+st.write(f"DEBUG: MODELS_PATH: {MODELS_PATH}")
+st.write(f"DEBUG: model_path (completo): {model_path}")
+st.write(f"DEBUG: input_file_path (completo): {input_file_path}")
+
+st.write("DEBUG: Conteúdo de DATA_PATH:")
+try:
+    if os.path.exists(DATA_PATH):
+        for item in os.listdir(DATA_PATH):
+            st.write(f"- {item}")
+    else:
+        st.write(f"DEBUG: Pasta '{DATA_PATH}' não encontrada.")
+except Exception as e:
+    st.write(f"DEBUG: Erro ao listar '{DATA_PATH}': {e}")
+
+st.write("DEBUG: Conteúdo de MODELS_PATH:")
+try:
+    if os.path.exists(MODELS_PATH):
+        for item in os.listdir(MODELS_PATH):
+            st.write(f"- {item}")
+    else:
+        st.write(f"DEBUG: Pasta '{MODELS_PATH}' não encontrada.")
+except Exception as e:
+    st.write(f"DEBUG: Erro ao listar '{MODELS_PATH}': {e}")
+# --- FIM DO CÓDIGO DE DEPURACAO ---
+
 
 # --- Funções de Carregamento com Cache para Streamlit ---
 # Estas funções agora envolvem as funções de model_logic.py e aplicam o cache do Streamlit
@@ -124,16 +153,17 @@ try:
                 f"{original_ufpe_ed6['Nota em Internacionalização']:.2f}"
             ]
         })
-        st.dataframe(original_ufpe_ed6_display, hide_index=True)
+        st.dataframe(original_ufpe_ed6_display.set_index('Métrica'), hide_index=False)
         st.success("DEBUG: 8. Tabela resumo da UFPE exibida.")
     except Exception as e:
-        st.error(f"Erro ao preparar ou exibir a tabela resumo da UFPE: {e}.")
+        st.error(f"Erro ao exibir dados originais da UFPE: {e}")
         st.exception(e)
         st.stop()
 
-    st.sidebar.header("Ajustar Variações para a UFPE (Edição Simulada)")
+    st.markdown("---")
+    st.sidebar.header("Configurações da Simulação")
 
-    # Inicializa st.session_state para sliders e checkbox
+    # Inicializa session_state para sliders
     if 'pct_change_ensino' not in st.session_state:
         st.session_state.pct_change_ensino = 0.0
         st.session_state.pct_change_pesquisa = 0.0
@@ -174,9 +204,10 @@ try:
 
             simulated_ufpe_ed7 = simulated_df[simulated_df['Universidade'] == ufpe_exact_name].iloc[0]
 
-            st.metric(label=f"Ranking Simulada da UFPE (Edição {get_year_from_edition(latest_edition + 1)})", value=f"#{int(simulated_ufpe_ed7['Simulated_Ranking'])}")
+            st.subheader(f"Resultados da Simulação para a Edição {get_year_from_edition(latest_edition + 1)}")
+            st.metric(label=f"Ranking Simulada da UFPE", value=f"#{int(simulated_ufpe_ed7['Simulated_Ranking'])}")
 
-            st.subheader("Comparativo UFPE: Edição 6 (Original) vs. Edição 7 (Simulada)")
+            st.subheader("Comparativo UFPE: Edição Original vs. Edição Simulada")
             comparison_df = pd.DataFrame({
                 'Métrica': ['Ranking', 'Nota Geral', 'Ensino', 'Pesquisa', 'Mercado', 'Inovação', 'Internacionalização'],
                 f'Edição {get_year_from_edition(latest_edition)} (Original)': [
@@ -241,6 +272,20 @@ try:
             ).interactive()
 
             st.altair_chart(chart, use_container_width=True)
+
+            st.markdown("---")
+            st.subheader("Top 10 Instituições Previstas")
+            # Selecionar e formatar colunas para exibição
+            display_cols = ['Simulated_Ranking', 'Universidade', 'Nota'] + [col for col in simulated_df.columns if col.startswith('Nota em')]
+            display_df = simulated_df[display_cols].copy()
+            display_df.columns = [col.replace('Simulated_Ranking', 'Ranking Previsto').replace('Universidade', 'Instituição').replace('Nota', 'Nota Geral') for col in display_df.columns]
+            # Formatar as notas para 2 casas decimais
+            for col in display_df.columns:
+                if 'Nota' in col:
+                    display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}")
+
+            st.dataframe(display_df.head(10), use_container_width=True)
+
 
         except Exception as e:
             st.error(f"Ocorreu um erro durante a execução da simulação: {e}.")
