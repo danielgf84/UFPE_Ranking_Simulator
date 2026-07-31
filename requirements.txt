@@ -1,1 +1,7 @@
-requests
+streamlit
+pandas
+openpyxl
+joblib
+numpy
+altair
+xgboost
