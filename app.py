@@ -19,6 +19,22 @@ input_file_path = os.path.join(data_path, input_file_name)
 ufpe_exact_name = 'Universidade Federal de Pernambuco'
 target_column = 'Ranking'
 
+# --- NOVO: Mapeamento de Edições para Anos ---
+EDITION_YEAR_MAP = {
+    1: 2017,
+    2: 2018,
+    3: 2019,
+    4: 2023, # Assumindo que houve um gap e a Edição 4 foi em 2023
+    5: 2024,
+    6: 2025,
+    7: 2026  # Edição simulada
+}
+
+# Função auxiliar para obter o ano da edição
+def get_year_from_edition(edition_number):
+    return EDITION_YEAR_MAP.get(edition_number, f"Ano Desconhecido (Edição {edition_number})")
+
+
 # --- Funções de Carregamento (com cache para Streamlit) ---
 
 @st.cache_resource # Usa o cache do Streamlit para carregar o modelo apenas uma vez
@@ -214,7 +230,7 @@ st.title("📊 Simulador de Ranking RUF - UFPE")
 st.markdown("Preveja o impacto de mudanças nas notas da UFPE no Ranking Universitário Folha (RUF).")
 
 # --- Quadro Resumo com Notas Atuais da UFPE (Edição 6) ---
-st.subheader("Notas Atuais da UFPE (Edição 6)")
+st.subheader(f"Notas Atuais da UFPE (Edição 6 - {get_year_from_edition(6)})") # Título atualizado
 
 # Seleciona as colunas de interesse para o resumo
 cols_to_display = ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']
@@ -223,12 +239,13 @@ ufpe_current_notes = ufpe_data_edicao_6[cols_to_display].iloc[0]
 # Cria um DataFrame para exibir de forma mais amigável
 summary_df = pd.DataFrame({
     'Métrica': ufpe_current_notes.index,
-    'Valor (Edição 6)': ufpe_current_notes.values
+    'Valor': ufpe_current_notes.values # Removido "(Edição 6)" pois já está no título
 })
-st.dataframe(summary_df.set_index('Métrica'))
+# Esconde o índice do DataFrame aqui
+st.dataframe(summary_df.set_index('Métrica'), hide_index=False) # Mantém 'Métrica' como índice visível
 st.markdown("---") # Adiciona um separador visual
 
-st.header("Configurações de Simulação para a UFPE (Edição 7)")
+st.header(f"Configurações de Simulação para a UFPE (Edição 7 - {get_year_from_edition(7)})") # Título atualizado
 st.markdown("Ajuste as variações percentuais para as notas da UFPE na próxima edição do RUF.")
 
 col1, col2, col3 = st.columns(3)
@@ -248,7 +265,7 @@ with col3:
     pct_internacionalizacao_display = st.slider("Variação % em Internacionalização", -20, 20, 0, 1, format="%.0f%%")
 
 if st.button("Executar Simulação"):
-    st.subheader("Resultados da Simulação (Edição 7)")
+    st.subheader(f"Resultados da Simulação (Edição 7 - {get_year_from_edition(7)})") # Título atualizado
 
     # Converte os valores dos sliders para decimais antes de passar para a função de simulação
     pct_ensino = pct_ensino_display / 100
@@ -273,20 +290,20 @@ if st.button("Executar Simulação"):
     # Exibe o ranking da UFPE
     ufpe_simulated_ranking = df_simulated_results[df_simulated_results['Universidade'] == ufpe_exact_name]
     st.write(f"**Ranking Simulador da UFPE:** Posição **#{ufpe_simulated_ranking['Simulated_Ranking'].iloc[0]}**")
-    st.dataframe(ufpe_simulated_ranking)
+    st.dataframe(ufpe_simulated_ranking, hide_index=True) # Esconde o índice
 
     st.markdown("---")
     st.subheader("Ranking Completo Simulador (Top 20)")
-    st.dataframe(df_simulated_results.sort_values('Simulated_Ranking').head(20))
+    st.dataframe(df_simulated_results.sort_values('Simulated_Ranking').head(20), hide_index=True) # Esconde o índice
 
     st.markdown("---")
-    st.subheader("Comparativo UFPE (Edição 6 vs. Edição 7 Simulada)")
+    st.subheader(f"Comparativo UFPE (Edição 6 - {get_year_from_edition(6)} vs. Edição 7 - {get_year_from_edition(7)} Simulada)") # Título atualizado
     original_ufpe_ed6 = df_edicao_6[df_edicao_6['Universidade'] == ufpe_exact_name][['Universidade', 'Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']].iloc[0]
     simulated_ufpe_ed7 = ufpe_simulated_ranking[['Universidade', 'Simulated_Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']].iloc[0]
 
     comparison_df = pd.DataFrame({
         'Métrica': ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota Geral'],
-        'Edição 6 (Original)': [
+        f'Edição 6 ({get_year_from_edition(6)})': [ # Coluna atualizada
             original_ufpe_ed6['Ranking'],
             original_ufpe_ed6['Nota em Ensino'],
             original_ufpe_ed6['Nota em Pesquisa'],
@@ -295,7 +312,7 @@ if st.button("Executar Simulação"):
             original_ufpe_ed6['Nota em Internacionalização'],
             original_ufpe_ed6['Nota']
         ],
-        'Edição 7 (Simulada)': [
+        f'Edição 7 ({get_year_from_edition(7)}) Simulada': [ # Coluna atualizada
             simulated_ufpe_ed7['Simulated_Ranking'],
             simulated_ufpe_ed7['Nota em Ensino'],
             simulated_ufpe_ed7['Nota em Pesquisa'],
@@ -305,7 +322,7 @@ if st.button("Executar Simulação"):
             simulated_ufpe_ed7['Nota']
         ]
     })
-    st.dataframe(comparison_df.set_index('Métrica'))
+    st.dataframe(comparison_df.set_index('Métrica'), hide_index=False) # Mantém 'Métrica' como índice visível
 
 st.markdown("---")
 st.info("Este simulador utiliza um modelo de Machine Learning treinado com dados históricos do RUF para prever o ranking. As previsões são estimativas e não garantem resultados futuros.")
