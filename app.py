@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import joblib
 import numpy as np
+import altair as alt # Importa Altair para gráficos
 
 # --- 1. Configuração e Carregamento de Recursos ---
 # O caminho para a sua pasta 'data' no repositório GitHub
@@ -19,7 +20,7 @@ input_file_path = os.path.join(data_path, input_file_name)
 ufpe_exact_name = 'Universidade Federal de Pernambuco'
 target_column = 'Ranking'
 
-# --- NOVO: Mapeamento de Edições para Anos ---
+# --- Mapeamento de Edições para Anos ---
 EDITION_YEAR_MAP = {
     1: 2017,
     2: 2018,
@@ -89,7 +90,7 @@ if ufpe_data_edicao_6.empty:
 features = [col for col in df_model.columns if col not in ['Universidade', 'is_UFPE', 'Edicao_RUF', target_column]]
 
 # --- Cálculo das Tendências Médias para Outras Universidades ---
-# (Copiado do Bloco 3 do notebook)
+# Lista das colunas de notas base que serão usadas para calcular tendências
 notas_cols_base = ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota']
 trend_pct_change_cols = [f'{col}_pct_change_prev' for col in notas_cols_base]
 
@@ -140,8 +141,8 @@ def simulate_full_ranking_avg_trend(
     df_simulated_edicao = df_base_edicao_6.copy()
     df_simulated_edicao['Edicao_RUF'] = 7 # Sinaliza para o modelo que esta é a "próxima" edição
 
-    # Mapeamento das notas para as variações percentuais de entrada
-    notas_cols_input = {
+    # Mapeamento das notas para as variações percentuais de entrada da UFPE
+    ufpe_pct_changes = {
         'Nota em Ensino': pct_change_ensino,
         'Nota em Pesquisa': pct_change_pesquisa,
         'Nota em Mercado': pct_change_mercado,
@@ -149,67 +150,69 @@ def simulate_full_ranking_avg_trend(
         'Nota em Internacionalização': pct_change_internacionalizacao
     }
 
-    # --- Processar a UFPE ---
-    ufpe_idx = df_simulated_edicao[df_simulated_edicao['Universidade'] == ufpe_name].index[0]
-    original_ufpe_notes_ed6 = df_base_edicao_6.loc[ufpe_idx].copy() # Notas originais da Edição 6
+    # Aplica as variações da UFPE e as tendências médias para as outras universidades
+    for uni_idx, uni_row in df_simulated_edicao.iterrows(): # Renomeado uni_name para uni_row para evitar confusão
+        if uni_row['Universidade'] == ufpe_name:
+            # Aplica as variações da UFPE (definidas pelos sliders)
+            original_ufpe_notes_ed6 = df_base_edicao_6.loc[uni_idx].copy() # Notas originais da Edição 6
+            for col_base, pct_change_val in ufpe_pct_changes.items():
+                original_note_ufpe = original_ufpe_notes_ed6[col_base]
+                new_note_ufpe = original_note_ufpe * (1 + pct_change_val)
+                df_simulated_edicao.loc[uni_idx, col_base] = new_note_ufpe
 
-    for col_base, pct_change in notas_cols_input.items():
-        original_note_ufpe = original_ufpe_notes_ed6[col_base]
-        new_note_ufpe = original_note_ufpe * (1 + pct_change)
-        df_simulated_edicao.loc[ufpe_idx, col_base] = new_note_ufpe
+                # Atualiza as colunas de variação para a UFPE
+                df_simulated_edicao.loc[uni_idx, f'{col_base}_diff_prev'] = new_note_ufpe - original_note_ufpe
+                if original_note_ufpe != 0:
+                    df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = (new_note_ufpe - original_note_ufpe) / original_note_ufpe
+                else:
+                    df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = 0.0
 
-        df_simulated_edicao.loc[ufpe_idx, f'{col_base}_diff_prev'] = new_note_ufpe - original_note_ufpe
-        if original_note_ufpe != 0:
-            df_simulated_edicao.loc[ufpe_idx, f'{col_base}_pct_change_prev'] = (new_note_ufpe - original_note_ufpe) / original_note_ufpe
-        else:
-            df_simulated_edicao.loc[ufpe_idx, f'{col_base}_pct_change_prev'] = 0.0
+            # Recalcular a Nota Geral e suas variações para a UFPE
+            original_overall_note_ufpe_ed6 = original_ufpe_notes_ed6['Nota']
+            new_overall_note_ufpe_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
+            df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_ufpe_simulated
 
-    # Recalcular a Nota Geral e suas variações para a UFPE
-    original_overall_note_ufpe_ed6 = original_ufpe_notes_ed6['Nota']
-    new_overall_note_ufpe_simulated = df_simulated_edicao.loc[ufpe_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
-    df_simulated_edicao.loc[ufpe_idx, 'Nota'] = new_overall_note_ufpe_simulated
-
-    df_simulated_edicao.loc[ufpe_idx, 'Nota_diff_prev'] = new_overall_note_ufpe_simulated - original_overall_note_ufpe_ed6
-    if original_overall_note_ufpe_ed6 != 0:
-        df_simulated_edicao.loc[ufpe_idx, 'Nota_pct_change_prev'] = (new_overall_note_ufpe_simulated - original_overall_note_ufpe_ed6) / original_overall_note_ufpe_ed6
-    else:
-        df_simulated_edicao.loc[ufpe_idx, 'Nota_pct_change_prev'] = 0.0
-
-    # --- Processar as OUTRAS universidades (aplicando tendências médias) ---
-    other_universities_names = df_simulated_edicao[df_simulated_edicao['Universidade'] != ufpe_name]['Universidade'].unique()
-
-    for uni_name in other_universities_names:
-        uni_idx = df_simulated_edicao[df_simulated_edicao['Universidade'] == uni_name].index[0]
-        original_uni_notes_ed6 = df_base_edicao_6.loc[uni_idx].copy() # Notas originais da Edição 6
-
-        for col_base in notas_cols_input.keys():
-            col_pct_change_prev = f'{col_base}_pct_change_prev'
-            # Tenta obter a tendência média para esta universidade e dimensão
-            if uni_name in average_trends_df.index and col_pct_change_prev in average_trends_df.columns:
-                trend_pct_change = average_trends_df.loc[uni_name, col_pct_change_prev]
+            df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_ufpe_simulated - original_overall_note_ufpe_ed6
+            if original_overall_note_ufpe_ed6 != 0:
+                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_ufpe_simulated - original_overall_note_ufpe_ed6) / original_overall_note_ufpe_ed6
             else:
-                trend_pct_change = 0.0 # Se não houver tendência média, assume 0% de mudança
+                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
 
-            original_note_other = original_uni_notes_ed6[col_base]
-            new_note_other = original_note_other * (1 + trend_pct_change)
-            df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
-
-            df_simulated_edicao.loc[uni_idx, f'{col_base}_diff_prev'] = new_note_other - original_note_other
-            if original_note_other != 0:
-                df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = (new_note_other - original_note_other) / original_note_other
-            else:
-                df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = 0.0
-
-        # Recalcular a Nota Geral e suas variações para as outras universidades
-        original_overall_note_uni_ed6 = original_uni_notes_ed6['Nota']
-        new_overall_note_uni_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
-        df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_uni_simulated
-
-        df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_uni_simulated - original_overall_note_uni_ed6
-        if original_overall_note_uni_ed6 != 0:
-            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_uni_simulated - original_overall_note_uni_ed6) / original_overall_note_uni_ed6
         else:
-            df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
+            # Aplica as tendências médias para as outras universidades
+            original_uni_notes_ed6 = df_base_edicao_6.loc[uni_idx].copy() # Notas originais da Edição 6
+
+            # CORREÇÃO AQUI: Itera sobre as colunas de notas base, não sobre as chaves de ufpe_pct_changes
+            for col_base in ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']:
+                col_pct_change_prev = f'{col_base}_pct_change_prev'
+
+                # Tenta obter a tendência média para ESTA universidade e ESTA dimensão
+                if uni_row['Universidade'] in average_trends_df.index and col_pct_change_prev in average_trends_df.columns:
+                    trend_pct_change = average_trends_df.loc[uni_row['Universidade'], col_pct_change_prev]
+                else:
+                    trend_pct_change = 0.0 # Se não houver tendência média, assume 0% de mudança
+
+                original_note_other = original_uni_notes_ed6[col_base]
+                new_note_other = original_note_other * (1 + trend_pct_change)
+                df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
+
+                # Também atualiza as colunas _diff_prev e _pct_change_prev para outras universidades
+                df_simulated_edicao.loc[uni_idx, f'{col_base}_diff_prev'] = new_note_other - original_note_other
+                if original_note_other != 0:
+                    df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = (new_note_other - original_note_other) / original_note_other
+                else:
+                    df_simulated_edicao.loc[uni_idx, f'{col_base}_pct_change_prev'] = 0.0
+
+            # Recalcular a Nota Geral e suas variações para as outras universidades
+            original_overall_note_uni_ed6 = original_uni_notes_ed6['Nota']
+            new_overall_note_uni_simulated = df_simulated_edicao.loc[uni_idx, ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']].sum()
+            df_simulated_edicao.loc[uni_idx, 'Nota'] = new_overall_note_uni_simulated
+
+            df_simulated_edicao.loc[uni_idx, 'Nota_diff_prev'] = new_overall_note_uni_simulated - original_overall_note_uni_ed6
+            if original_overall_note_uni_ed6 != 0:
+                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = (new_overall_note_uni_simulated - original_overall_note_uni_ed6) / original_overall_note_uni_ed6
+            else:
+                df_simulated_edicao.loc[uni_idx, 'Nota_pct_change_prev'] = 0.0
 
     # Prever o ranking para a edição simulada
     X_simulated = df_simulated_edicao[features]
@@ -219,7 +222,7 @@ def simulate_full_ranking_avg_trend(
     df_simulated_edicao['Simulated_Ranking'] = df_simulated_edicao['Predicted_Ranking'].rank(method='min', ascending=True).astype(int)
 
     # CORREÇÃO AQUI: Convertendo dict_keys para list antes de concatenar
-    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + list(notas_cols_input.keys())]
+    return df_simulated_edicao[['Universidade', 'Simulated_Ranking', 'Predicted_Ranking', 'Nota'] + list(ufpe_pct_changes.keys())]
 
 
 # --- 3. Interface do Streamlit ---
@@ -250,19 +253,41 @@ st.markdown("Ajuste as variações percentuais para as notas da UFPE na próxima
 
 col1, col2, col3 = st.columns(3)
 
+# --- NOVO: Variáveis de estado para os sliders ---
+# Isso permite que o botão de reset funcione
+if 'pct_ensino_display' not in st.session_state:
+    st.session_state.pct_ensino_display = 0
+if 'pct_pesquisa_display' not in st.session_state:
+    st.session_state.pct_pesquisa_display = 0
+if 'pct_mercado_display' not in st.session_state:
+    st.session_state.pct_mercado_display = 0
+if 'pct_inovacao_display' not in st.session_state:
+    st.session_state.pct_inovacao_display = 0
+if 'pct_internacionalizacao_display' not in st.session_state:
+    st.session_state.pct_internacionalizacao_display = 0
+
 with col1:
-    # Ajustado para exibir como porcentagem e converter para decimal na simulação
-    pct_ensino_display = st.slider("Variação % em Ensino", -20, 20, 0, 1, format="%.0f%%")
-    pct_pesquisa_display = st.slider("Variação % em Pesquisa", -20, 20, 0, 1, format="%.0f%%")
+    pct_ensino_display = st.slider("Variação % em Ensino", -20, 20, st.session_state.pct_ensino_display, 1, format="%.0f%%", key="ensino_slider")
+    pct_pesquisa_display = st.slider("Variação % em Pesquisa", -20, 20, st.session_state.pct_pesquisa_display, 1, format="%.0f%%", key="pesquisa_slider")
 
 with col2:
-    # Ajustado para exibir como porcentagem e converter para decimal na simulação
-    pct_mercado_display = st.slider("Variação % em Mercado", -20, 20, 0, 1, format="%.0f%%")
-    pct_inovacao_display = st.slider("Variação % em Inovação", -20, 20, 0, 1, format="%.0f%%")
+    pct_mercado_display = st.slider("Variação % em Mercado", -20, 20, st.session_state.pct_mercado_display, 1, format="%.0f%%", key="mercado_slider")
+    pct_inovacao_display = st.slider("Variação % em Inovação", -20, 20, st.session_state.pct_inovacao_display, 1, format="%.0f%%", key="inovacao_slider")
 
 with col3:
-    # Ajustado para exibir como porcentagem e converter para decimal na simulação
-    pct_internacionalizacao_display = st.slider("Variação % em Internacionalização", -20, 20, 0, 1, format="%.0f%%")
+    pct_internacionalizacao_display = st.slider("Variação % em Internacionalização", -20, 20, st.session_state.pct_internacionalizacao_display, 1, format="%.0f%%", key="internacionalizacao_slider")
+
+# --- NOVO: Função para resetar os sliders ---
+def reset_sliders():
+    st.session_state.pct_ensino_display = 0
+    st.session_state.pct_pesquisa_display = 0
+    st.session_state.pct_mercado_display = 0
+    st.session_state.pct_inovacao_display = 0
+    st.session_state.pct_internacionalizacao_display = 0
+
+# Botão para resetar os sliders
+st.button("Resetar Variações", on_click=reset_sliders)
+
 
 if st.button("Executar Simulação"):
     st.subheader(f"Resultados da Simulação (Edição 7 - {get_year_from_edition(7)})") # Título atualizado
@@ -303,7 +328,7 @@ if st.button("Executar Simulação"):
 
     comparison_df = pd.DataFrame({
         'Métrica': ['Ranking', 'Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização', 'Nota Geral'],
-        f'Edição 6 ({get_year_from_edition(6)})': [ # Coluna atualizada
+        f'Edição {get_year_from_edition(6)} (Original)': [ # Coluna atualizada
             original_ufpe_ed6['Ranking'],
             original_ufpe_ed6['Nota em Ensino'],
             original_ufpe_ed6['Nota em Pesquisa'],
@@ -312,7 +337,7 @@ if st.button("Executar Simulação"):
             original_ufpe_ed6['Nota em Internacionalização'],
             original_ufpe_ed6['Nota']
         ],
-        f'Edição 7 ({get_year_from_edition(7)}) Simulada': [ # Coluna atualizada
+        f'Edição {get_year_from_edition(7)} (Simulada)': [ # Coluna atualizada
             simulated_ufpe_ed7['Simulated_Ranking'],
             simulated_ufpe_ed7['Nota em Ensino'],
             simulated_ufpe_ed7['Nota em Pesquisa'],
@@ -322,7 +347,57 @@ if st.button("Executar Simulação"):
             simulated_ufpe_ed7['Nota']
         ]
     })
+
+    # --- NOVO: Adiciona a coluna de Diferença ---
+    comparison_df['Diferença'] = comparison_df[f'Edição {get_year_from_edition(7)} (Simulada)'] - comparison_df[f'Edição {get_year_from_edition(6)} (Original)']
+    # Para o Ranking, a diferença negativa é uma melhoria, então invertemos o sinal para clareza
+    ranking_diff_idx = comparison_df[comparison_df['Métrica'] == 'Ranking'].index
+    if not ranking_diff_idx.empty:
+        comparison_df.loc[ranking_diff_idx, 'Diferença'] = -comparison_df.loc[ranking_diff_idx, 'Diferença']
+
+
     st.dataframe(comparison_df.set_index('Métrica'), hide_index=False) # Mantém 'Métrica' como índice visível
+
+    # --- NOVO: Gráfico de Barras para Comparativo de Notas ---
+    st.markdown("---")
+    st.subheader("Comparativo Gráfico de Notas (Edição 6 vs. Edição 7 Simulada)")
+
+    # Prepara os dados para o gráfico
+    chart_data = pd.DataFrame({
+        'Métrica': ['Ensino', 'Pesquisa', 'Mercado', 'Inovação', 'Internacionalização', 'Geral'],
+        f'Edição {get_year_from_edition(6)}': [
+            original_ufpe_ed6['Nota em Ensino'],
+            original_ufpe_ed6['Nota em Pesquisa'],
+            original_ufpe_ed6['Nota em Mercado'],
+            original_ufpe_ed6['Nota em Inovação'],
+            original_ufpe_ed6['Nota em Internacionalização'],
+            original_ufpe_ed6['Nota']
+        ],
+        f'Edição {get_year_from_edition(7)} Simulada': [
+            simulated_ufpe_ed7['Nota em Ensino'],
+            simulated_ufpe_ed7['Nota em Pesquisa'],
+            simulated_ufpe_ed7['Nota em Mercado'],
+            simulated_ufpe_ed7['Nota em Inovação'],
+            simulated_ufpe_ed7['Nota em Internacionalização'],
+            simulated_ufpe_ed7['Nota']
+        ]
+    })
+
+    # Transforma o DataFrame para o formato "long" para Altair
+    chart_data_melted = chart_data.melt('Métrica', var_name='Edição', value_name='Nota')
+
+    # Cria o gráfico de barras
+    chart = alt.Chart(chart_data_melted).mark_bar().encode(
+        x=alt.X('Métrica', axis=alt.Axis(title='Dimensão da Nota')),
+        y=alt.Y('Nota', axis=alt.Axis(title='Valor da Nota')),
+        color=alt.Color('Edição', title='Edição RUF'),
+        tooltip=['Métrica', 'Edição', 'Nota']
+    ).properties(
+        title='Notas da UFPE por Dimensão'
+    ).interactive() # Permite zoom e pan
+
+    st.altair_chart(chart, use_container_width=True)
+
 
 st.markdown("---")
 st.info("Este simulador utiliza um modelo de Machine Learning treinado com dados históricos do RUF para prever o ranking. As previsões são estimativas e não garantem resultados futuros.")
