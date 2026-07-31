@@ -6,7 +6,7 @@ import numpy as np
 
 # --- 1. Configuração e Carregamento de Recursos ---
 # O caminho para a sua pasta 'data' no Google Drive
-data_path = '/content/drive/MyDrive/TESE/simulador/data'
+data_path = 'data'
 
 # Caminho completo para o arquivo do modelo XGBoost
 model_path = os.path.join(data_path, 'xgboost_model.pkl')
