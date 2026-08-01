@@ -56,57 +56,53 @@ def calculate_average_trends(df_full_data, ufpe_name):
         'Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização'
     ]
 
-    # Para cada universidade, calcula a mudança percentual entre edições consecutivas
-    # e depois a média dessas mudanças ao longo do tempo.
-    average_trends_data = {}
+    # Garante que as colunas são numéricas antes de calcular as tendências
     for col in cols_to_trend:
         if col in df_other_universities.columns:
-            # Ordena por universidade e edição para garantir o cálculo correto de pct_change
-            df_sorted = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF'])
+            df_other_universities[col] = pd.to_numeric(df_other_universities[col], errors='coerce')
 
-            # Garante que a coluna é numérica para o cálculo
-            df_sorted[col] = pd.to_numeric(df_sorted[col], errors='coerce').fillna(0)
+    # Calcula a mudança percentual entre edições consecutivas para cada universidade
+    # Agrupa por universidade e calcula a diferença percentual
+    # Usa shift(1) para comparar com a edição anterior
+    df_other_universities_sorted = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF'])
+    df_other_universities_sorted['Edicao_RUF_prev'] = df_other_universities_sorted.groupby('Universidade')['Edicao_RUF'].shift(1)
 
-            # Calcula a diferença e a mudança percentual
-            diff = df_sorted.groupby('Universidade')[col].diff().fillna(0)
-            # Evita divisão por zero e NaN, preenchendo com 0
-            pct_change = (diff / df_sorted.groupby('Universidade')[col].shift(1).replace(0, np.nan)).fillna(0)
+    # Filtra para ter apenas pares de edições consecutivas
+    df_pairs = df_other_universities_sorted[df_other_universities_sorted['Edicao_RUF_prev'].notna()].copy()
 
-            # Adiciona ao DataFrame temporário
-            df_other_universities[f'{col}_diff_prev'] = diff
-            df_other_universities[f'{col}_pct_change_prev'] = pct_change
+    all_universities_average_trends = {}
+    epsilon = 1e-6 # Pequeno valor para evitar divisão por zero
+
+    for col in cols_to_trend:
+        if col in df_pairs.columns:
+            # Calcula a mudança percentual para cada par de edições
+            df_pairs[f'{col}_prev'] = df_other_universities_sorted.groupby('Universidade')[col].shift(1)
+            df_pairs[f'{col}_pct_change'] = (
+                (df_pairs[col] - df_pairs[f'{col}_prev']) / (df_pairs[f'{col}_prev'].replace(0, np.nan) + epsilon)
+            ).fillna(0)
+
+            # Calcula a média dessas mudanças percentuais
+            avg_pct_change = df_pairs[f'{col}_pct_change'].mean()
+            all_universities_average_trends[f'{col}_pct_change_prev'] = avg_pct_change
         else:
-            print(f"MODEL_LOGIC_WARNING: Coluna '{col}' não encontrada em df_other_universities para calcular tendências.")
+            print(f"MODEL_LOGIC_WARNING: Coluna '{col}' não encontrada para calcular tendências médias.")
 
-    # Seleciona apenas as colunas de tendência criadas
-    trend_cols = [col for col in df_other_universities.columns if '_diff_prev' in col or '_pct_change_prev' in col]
-
-    if not trend_cols:
-        print("MODEL_LOGIC_WARNING: Nenhuma coluna de tendência foi criada. Retornando DataFrame vazio.")
-        return pd.DataFrame()
-
-    # Calcula a média das tendências para cada universidade
-    average_trends_per_university = df_other_universities.groupby('Universidade')[trend_cols].mean()
-
-    # Calcula a média geral dessas tendências para todas as universidades
-    all_universities_average_trends = average_trends_per_university.mean().to_dict()
-
-    print("MODEL_LOGIC_DEBUG: calculate_average_trends concluída.")
+    print("MODEL_LOGIC_DEBUG: Tendências médias calculadas.")
     return all_universities_average_trends
 
-
-# --- Função de Simulação ---
-def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_universities_average_trends,
-                                    pct_change_ensino, pct_change_pesquisa, pct_change_mercado,
-                                    pct_change_inovacao, pct_change_internacionalizacao,
-                                    apply_other_uni_trends, model_expected_features):
-
+# --- Função de Simulação Principal ---
+def simulate_full_ranking_avg_trend(
+    df_base_edicao_6, model, ufpe_name, all_universities_average_trends,
+    pct_change_ensino, pct_change_pesquisa, pct_change_mercado,
+    pct_change_inovacao, pct_change_internacionalizacao,
+    apply_other_uni_trends, model_expected_features
+):
     print("MODEL_LOGIC_DEBUG: Iniciando simulate_full_ranking_avg_trend.")
+
+    # Cria uma cópia do DataFrame da edição base para a simulação
     df_simulated_edicao = df_base_edicao_6.copy()
 
-    # Debug: Check columns of df_base_edicao_6
-    print(f"MODEL_LOGIC_DEBUG: Columns of df_base_edicao_6: {df_base_edicao_6.columns.tolist()}")
-
+    # Lista de colunas de notas e posições
     notas_cols_base_list = ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']
     posicao_cols_base_list = ['Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização']
     ranking_cols = ['Ranking'] + posicao_cols_base_list # Colunas que devem ser inteiras
@@ -118,7 +114,8 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
         # Garante que as colunas são float antes de aplicar a variação
         for col in notas_cols_base_list:
             df_simulated_edicao.loc[idx, col] = pd.to_numeric(df_simulated_edicao.loc[idx, col], errors='coerce')
-            df_simulated_edicao.loc[idx, col] *= (1 + locals()[f'pct_change_{col.replace("Nota em ", "").lower()}'])
+            # --- CORREÇÃO AQUI: Adiciona .replace('ç', 'c') para corresponder aos nomes das variáveis ---
+            df_simulated_edicao.loc[idx, col] *= (1 + locals()[f'pct_change_{col.replace("Nota em ", "").lower().replace("ç", "c")}'])
         print(f"MODEL_LOGIC_DEBUG: Variações aplicadas à UFPE.")
     else:
         print(f"MODEL_LOGIC_WARNING: UFPE não encontrada em df_simulated_edicao para aplicar variações.")
@@ -155,7 +152,7 @@ def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_univ
 
     # Recalcula as Posições (rankings individuais para cada dimensão)
     for col in notas_cols_base_list:
-        df_simulated_edicao[f'Posição em {col.replace("Nota em ", "")}'] = df_simulated_edicao[col].rank(ascending=False).astype(int)
+        df_simulated_edicao[f'Posição em {col.replace("Nota em ", "").replace("ç", "c")}'] = df_simulated_edicao[col].rank(ascending=False).astype(int)
     print("MODEL_LOGIC_DEBUG: Notas e Posições recalculadas para a edição simulada.")
 
     # Prepara o DataFrame para o modelo
