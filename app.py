@@ -29,6 +29,7 @@ PROJECT_BASE_PATH = os.path.dirname(__file__)
 
 # Assumindo que 'data' e 'models' são subpastas na raiz do repositório
 DATA_PATH = os.path.join(PROJECT_BASE_PATH, 'data')
+# MODELS_PATH é mantido, mas o modelo xgboost_model.pkl será carregado de DATA_PATH
 MODELS_PATH = os.path.join(PROJECT_BASE_PATH, 'models')
 
 # Definir os nomes dos arquivos do modelo e dos dados
@@ -36,7 +37,8 @@ model_file_name = 'xgboost_model.pkl'
 input_file_name = 'ruf_consolidado_fe.xlsx'
 
 # Construir os caminhos completos para o modelo e os dados
-model_path = os.path.join(MODELS_PATH, model_file_name)
+# --- CORREÇÃO AQUI: model_path agora usa DATA_PATH ---
+model_path = os.path.join(DATA_PATH, model_file_name)
 input_file_path = os.path.join(DATA_PATH, input_file_name)
 
 # --- INÍCIO DO CÓDIGO DE DEPURACAO PARA VERIFICAR CAMINHOS E ARQUIVOS ---
