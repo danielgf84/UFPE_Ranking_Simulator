@@ -56,121 +56,133 @@ def calculate_average_trends(df_full_data, ufpe_name):
         'Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização'
     ]
 
-    # Garante que só consideramos colunas que existem no DataFrame
-    cols_to_trend = [col for col in cols_to_trend if col in df_other_universities.columns]
+    # Para cada universidade, calcula a mudança percentual entre edições consecutivas
+    # e depois a média dessas mudanças ao longo do tempo.
+    average_trends_data = {}
+    for col in cols_to_trend:
+        if col in df_other_universities.columns:
+            # Ordena por universidade e edição para garantir o cálculo correto de pct_change
+            df_sorted = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF'])
 
-    # Calcula a mudança percentual entre edições consecutivas para cada universidade
-    # Ordena por universidade e edição para garantir a ordem correta
-    df_other_universities_sorted = df_other_universities.sort_values(by=['Universidade', 'Edicao_RUF'])
+            # Calcula a diferença e a mudança percentual
+            diff = df_sorted.groupby('Universidade')[col].diff().fillna(0)
+            # Evita divisão por zero e NaN, preenchendo com 0
+            pct_change = (diff / df_sorted.groupby('Universidade')[col].shift(1).replace(0, np.nan)).fillna(0)
 
-    # Calcula a mudança percentual para as colunas de interesse
-    # pct_change() compara o valor atual com o valor anterior dentro de cada grupo de 'Universidade'
-    pct_changes = df_other_universities_sorted.groupby('Universidade')[cols_to_trend].pct_change()
-    pct_changes.columns = [f'{col}_pct_change_prev' for col in cols_to_trend]
+            # Adiciona ao DataFrame temporário
+            df_other_universities[f'{col}_diff_prev'] = diff
+            df_other_universities[f'{col}_pct_change_prev'] = pct_change
+        else:
+            print(f"MODEL_LOGIC_WARNING: Coluna '{col}' não encontrada em df_other_universities para calcular tendências.")
 
-    # Calcula a média dessas mudanças percentuais para cada universidade
-    # Isso representa a "tendência média" de mudança para cada métrica
-    average_trends = pct_changes.groupby(df_other_universities_sorted['Universidade']).mean().fillna(0) # Preenche NaN com 0
+    # Calcula a média das tendências para cada coluna, agrupando por universidade
+    # Isso dará a tendência média de cada universidade ao longo das edições
+    # Em seguida, calcula a média dessas tendências para todas as universidades
+    # para obter uma "tendência média geral" a ser aplicada.
+
+    # Seleciona apenas as colunas de tendência criadas
+    trend_cols = [col for col in df_other_universities.columns if '_diff_prev' in col or '_pct_change_prev' in col]
+
+    if not trend_cols:
+        print("MODEL_LOGIC_WARNING: Nenhuma coluna de tendência foi criada. Retornando DataFrame vazio.")
+        return pd.DataFrame()
+
+    # Calcula a média das tendências para cada universidade
+    average_trends_per_university = df_other_universities.groupby('Universidade')[trend_cols].mean()
+
+    # Calcula a média geral dessas tendências para todas as universidades
+    all_universities_average_trends = average_trends_per_university.mean().to_dict()
+
     print("MODEL_LOGIC_DEBUG: calculate_average_trends concluída.")
-    return average_trends
+    return all_universities_average_trends
 
-# --- Função de Simulação Principal ---
+
+# --- Função de Simulação ---
 def simulate_full_ranking_avg_trend(df_base_edicao_6, model, ufpe_name, all_universities_average_trends,
                                     pct_change_ensino, pct_change_pesquisa, pct_change_mercado,
                                     pct_change_inovacao, pct_change_internacionalizacao,
                                     apply_other_uni_trends, model_expected_features):
-    """
-    Simula o ranking futuro aplicando variações à UFPE e tendências médias a outras universidades.
-    """
+
     print("MODEL_LOGIC_DEBUG: Iniciando simulate_full_ranking_avg_trend.")
     df_simulated_edicao = df_base_edicao_6.copy()
+
+    # Debug: Check columns of df_base_edicao_6
+    print(f"MODEL_LOGIC_DEBUG: Columns of df_base_edicao_6: {df_base_edicao_6.columns.tolist()}")
 
     notas_cols_base_list = ['Nota em Ensino', 'Nota em Pesquisa', 'Nota em Mercado', 'Nota em Inovação', 'Nota em Internacionalização']
     posicao_cols_base_list = ['Posição em Ensino', 'Posição em Pesquisa', 'Posição em Mercado', 'Posição em Inovação', 'Posição em Internacionalização']
 
-    ufpe_pct_changes = {
-        'Nota em Ensino': pct_change_ensino,
-        'Nota em Pesquisa': pct_change_pesquisa,
-        'Nota em Mercado': pct_change_mercado,
-        'Nota em Inovação': pct_change_inovacao,
-        'Nota em Internacionalização': pct_change_internacionalizacao
-    }
+    # Aplica as variações percentuais à UFPE
+    ufpe_row_index = df_simulated_edicao[df_simulated_edicao['Universidade'] == ufpe_name].index
+    if not ufpe_row_index.empty:
+        idx = ufpe_row_index[0]
+        df_simulated_edicao.loc[idx, 'Nota em Ensino'] *= (1 + pct_change_ensino)
+        df_simulated_edicao.loc[idx, 'Nota em Pesquisa'] *= (1 + pct_change_pesquisa)
+        df_simulated_edicao.loc[idx, 'Nota em Mercado'] *= (1 + pct_change_mercado)
+        df_simulated_edicao.loc[idx, 'Nota em Inovação'] *= (1 + pct_change_inovacao)
+        df_simulated_edicao.loc[idx, 'Nota em Internacionalização'] *= (1 + pct_change_internacionalizacao)
+        print(f"MODEL_LOGIC_DEBUG: Variações aplicadas à UFPE.")
+    else:
+        print(f"MODEL_LOGIC_WARNING: UFPE não encontrada em df_simulated_edicao para aplicar variações.")
 
-    # Itera sobre cada universidade para aplicar as variações ou tendências
-    for uni_idx, uni_row in df_simulated_edicao.iterrows():
-        if uni_row['Universidade'] == ufpe_name:
-            # Aplica as variações da UFPE (definidas pelos sliders)
-            for col_base, pct_change_val in ufpe_pct_changes.items():
-                original_note_ufpe = uni_row[col_base]
-                new_note_ufpe = original_note_ufpe * (1 + pct_change_val)
-                df_simulated_edicao.loc[uni_idx, col_base] = new_note_ufpe
-        else:
-            # Aplica as tendências médias para as outras universidades, se o checkbox estiver marcado
-            if apply_other_uni_trends:
-                # all_universities_average_trends é um DataFrame com o índice 'Universidade'
-                # e colunas como 'Nota em Ensino_pct_change_prev'
-                for col_base in notas_cols_base_list:
-                    col_pct_change_prev = f'{col_base}_pct_change_prev'
-                    if uni_row['Universidade'] in all_universities_average_trends.index and col_pct_change_prev in all_universities_average_trends.columns:
-                        trend_pct_change = all_universities_average_trends.loc[uni_row['Universidade'], col_pct_change_prev]
-                    else:
-                        trend_pct_change = 0.0 # Se não houver tendência média para essa uni/col, assume 0% de mudança
+    # Aplica as tendências médias às outras universidades, se a opção estiver marcada
+    if apply_other_uni_trends and all_universities_average_trends:
+        for col_name, avg_pct_change in all_universities_average_trends.items():
+            if '_pct_change_prev' in col_name:
+                original_col = col_name.replace('_pct_change_prev', '')
+                if original_col in df_simulated_edicao.columns:
+                    # Aplica a tendência apenas para universidades que não são a UFPE
+                    mask = df_simulated_edicao['Universidade'] != ufpe_name
+                    df_simulated_edicao.loc[mask, original_col] *= (1 + avg_pct_change)
+        print(f"MODEL_LOGIC_DEBUG: Tendências médias aplicadas a outras universidades.")
+    elif apply_other_uni_trends and not all_universities_average_trends:
+        print("MODEL_LOGIC_WARNING: 'apply_other_uni_trends' está True, mas 'all_universities_average_trends' está vazio. Nenhuma tendência aplicada a outras universidades.")
 
-                    original_note_other = uni_row[col_base]
-                    new_note_other = original_note_other * (1 + trend_pct_change)
-                    df_simulated_edicao.loc[uni_idx, col_base] = new_note_other
 
-        # Recalcula a Nota Geral para cada universidade após as variações
-        # ATENÇÃO: Se a 'Nota' é calculada de forma mais complexa no RUF, ajuste aqui.
-        # Por enquanto, soma simples das notas das dimensões.
-        # Se 'Nota' já existe e é a soma, podemos atualizar. Se não, criar.
-        # Assumindo que 'Nota' é a soma das notas das dimensões para simplificar.
-        df_simulated_edicao.loc[uni_idx, 'Nota'] = df_simulated_edicao.loc[uni_idx, notas_cols_base_list].sum()
+    # Recalcula a Nota Geral e Posições para a edição simulada
+    # Garante que as notas não excedam 100
+    for col in notas_cols_base_list:
+        df_simulated_edicao[col] = df_simulated_edicao[col].clip(0, 100)
 
-    # --- Pré-processamento para o Modelo ---
-    print("MODEL_LOGIC_DEBUG: Iniciando pré-processamento para o modelo.")
-    # 1. Calcular features de diferença e percentual de mudança (para a Edição 7 em relação à Edição 6)
-    # df_base_edicao_6 é o df original da Edição 6
-    # df_simulated_edicao é o df da Edição 7 com as notas ajustadas
+    # Recalcula a Nota Geral (média das notas das dimensões)
+    df_simulated_edicao['Nota'] = df_simulated_edicao[notas_cols_base_list].mean(axis=1)
 
-    # Garante que ambos os dataframes têm as mesmas universidades na mesma ordem para o merge
-    df_base_edicao_6_sorted = df_base_edicao_6.set_index('Universidade').sort_index()
-    df_simulated_edicao_sorted = df_simulated_edicao.set_index('Universidade').sort_index()
+    # Recalcula as Posições (rankings individuais para cada dimensão)
+    for col in notas_cols_base_list:
+        df_simulated_edicao[f'Posição em {col.replace("Nota em ", "")}'] = df_simulated_edicao[col].rank(ascending=False).astype(int)
+    print("MODEL_LOGIC_DEBUG: Notas e Posições recalculadas para a edição simulada.")
 
-    # Lista de colunas para calcular diff/pct_change
-    # Inclui 'Ranking' e as notas e posições das dimensões
-    cols_to_compare = ['Ranking', 'Nota'] + notas_cols_base_list + posicao_cols_base_list
+    # Prepara o DataFrame para o modelo
+    df_simulated_edicao_sorted = df_simulated_edicao.sort_values(by='Universidade').reset_index(drop=True)
 
-    # Cria um DataFrame para armazenar as features de diferença/pct_change
-    features_for_model = pd.DataFrame(index=df_simulated_edicao_sorted.index)
+    # Cria as features de diferença e mudança percentual para a edição simulada
+    # (Estas são as features que o modelo espera, baseadas na edição anterior)
+    features_for_model = pd.DataFrame(index=df_simulated_edicao_sorted['Universidade'])
+    epsilon = 1e-6 # Pequeno valor para evitar divisão por zero
 
-    for col in cols_to_compare:
-        if col in df_base_edicao_6_sorted.columns and col in df_simulated_edicao_sorted.columns:
-            # Calcula a diferença
-            features_for_model[f'{col}_diff_prev'] = df_simulated_edicao_sorted[col] - df_base_edicao_6_sorted[col]
-            # Calcula o percentual de mudança (evita divisão por zero)
-            # Adiciona um pequeno epsilon para evitar divisão por zero em valores muito pequenos
-            epsilon = 1e-6
+    for col in notas_cols_base_list + posicao_cols_base_list + ['Nota', 'Ranking']:
+        if col in df_base_edicao_6.columns and col in df_simulated_edicao_sorted.columns:
+            features_for_model[f'{col}_diff_prev'] = df_simulated_edicao_sorted[col] - df_base_edicao_6[col]
             features_for_model[f'{col}_pct_change_prev'] = (
-                features_for_model[f'{col}_diff_prev'] / (df_base_edicao_6_sorted[col].replace(0, np.nan) + epsilon)
+                features_for_model[f'{col}_diff_prev'] / (df_base_edicao_6[col].replace(0, np.nan) + epsilon)
             ).fillna(0) # Preenche NaN (de divisão por zero) com 0
         else:
             print(f"MODEL_LOGIC_WARNING: Coluna '{col}' não encontrada em um dos DataFrames para cálculo de features. Será ignorada para features de diff/pct_change.")
 
-    # Adiciona as colunas categóricas (Estado, Pública ou Privada) ao DataFrame de features
-    # df_simulated_edicao_processed é o df_simulated_edicao_sorted com reset_index()
-    # Precisamos garantir que as colunas categóricas também estejam no features_for_model
-    # E que o OHE seja aplicado a elas.
-    df_simulated_edicao_with_features = df_simulated_edicao_sorted.reset_index().merge(
-        features_for_model.reset_index(), on='Universidade', how='left'
-    )
+    # Adiciona as colunas categóricas (Estado_XX, Pública ou Privada_YY) ao DataFrame de features
+    # df_simulated_edicao_with_features é o df_simulated_edicao_sorted com reset_index()
+    # As colunas OHE já estão em df_simulated_edicao_sorted
+    df_simulated_edicao_with_features = df_simulated_edicao_sorted.reset_index(drop=True).copy()
+
+    # Debug: Check columns just before get_dummies (agora removido)
+    print(f"MODEL_LOGIC_DEBUG: Columns of df_simulated_edicao_with_features BEFORE OHE (removed): {df_simulated_edicao_with_features.columns.tolist()}")
 
     # 2. Aplicar One-Hot Encoding para 'Estado' e 'Pública ou Privada'
-    # As categorias devem ser as mesmas usadas no treinamento do modelo
-    # Para garantir isso, é ideal ter uma lista de todas as categorias possíveis
-    # Por enquanto, vamos usar o pd.get_dummies e depois alinhar com as features esperadas
-    df_simulated_edicao_processed = pd.get_dummies(df_simulated_edicao_with_features, columns=['Estado', 'Pública ou Privada'], drop_first=False)
-    print("MODEL_LOGIC_DEBUG: One-Hot Encoding aplicado.")
+    # REMOVIDO: As colunas 'Estado' e 'Pública ou Privada' já estão One-Hot Encoded no DataFrame de entrada.
+    # O DataFrame df_simulated_edicao_with_features já deve conter as colunas como 'Estado_AL', 'Pública ou Privada_Federal', etc.
+    # Apenas copia o DataFrame, pois as colunas já estão no formato OHE.
+    df_simulated_edicao_processed = df_simulated_edicao_with_features.copy()
+    print("MODEL_LOGIC_DEBUG: One-Hot Encoding não aplicado, colunas já estão no formato OHE.")
 
     # 3. Alinhar colunas com as features esperadas pelo modelo
     # Isso é CRÍTICO para evitar o 'feature_names mismatch'
