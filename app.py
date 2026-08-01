@@ -189,7 +189,7 @@ try:
         st.session_state.pct_change_inovacao = 0.0
         st.session_state.pct_change_internacionalizacao = 0.0
         st.session_state.apply_other_uni_trends = True
-        st.experimental_rerun()
+        st.rerun()
 
     st.success("DEBUG: 9. Sliders e checkbox da sidebar definidos.")
 
