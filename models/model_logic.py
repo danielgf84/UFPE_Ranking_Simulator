@@ -1,5 +1,3 @@
-# model_logic.py
-
 from __future__ import annotations
 
 import os
@@ -14,10 +12,8 @@ import pandas as pd
 # CONFIGURAÇÕES
 # ============================================================
 
-UFPE_EXACT_NAME = "Universidade Federal de Pernambuco"
+ufpe_exact_name = "Universidade Federal de Pernambuco"
 
-# Mantém compatibilidade com o app.py
-ufpe_exact_name = UFPE_EXACT_NAME
 target_column = "Ranking"
 
 EDITION_YEAR_MAP = {
@@ -29,6 +25,8 @@ EDITION_YEAR_MAP = {
     6: 2025,
     7: 2026,
 }
+
+EPSILON = 1e-6
 
 NOTA_COLS = [
     "Nota em Ensino",
@@ -46,74 +44,40 @@ POSICAO_COLS = [
     "Posição em Internacionalização",
 ]
 
-RANKING_COLS = ["Ranking"] + POSICAO_COLS
-
-# Mapeamento explícito para evitar problemas com acentos
-SLIDER_TO_NOTA = {
-    "pct_change_ensino": "Nota em Ensino",
-    "pct_change_pesquisa": "Nota em Pesquisa",
-    "pct_change_mercado": "Nota em Mercado",
-    "pct_change_inovacao": "Nota em Inovação",
-    "pct_change_internacionalizacao": "Nota em Internacionalização",
-}
-
-EPSILON = 1e-6
+RANKING_COLS = [
+    "Ranking",
+    *POSICAO_COLS,
+]
 
 
 # ============================================================
 # FUNÇÕES AUXILIARES
 # ============================================================
 
-def get_year_from_edition(edition_number: int):
+def get_year_from_edition(edition_number):
     """
-    Retorna o ano associado à edição RUF.
+    Retorna o ano correspondente à edição do RUF.
     """
+
+    try:
+        edition_number = int(edition_number)
+    except (TypeError, ValueError):
+        pass
+
     return EDITION_YEAR_MAP.get(
-        int(edition_number),
+        edition_number,
         f"Ano Desconhecido (Edição {edition_number})",
     )
 
 
-def _ensure_required_columns(
-    df: pd.DataFrame,
-    required_columns: Iterable[str],
-    dataframe_name: str = "DataFrame",
-) -> None:
+def get_model_feature_names(model) -> list[str]:
     """
-    Verifica se as colunas essenciais existem.
-    """
-    missing = [col for col in required_columns if col not in df.columns]
+    Retorna os nomes das features utilizadas no treinamento do modelo.
 
-    if missing:
-        raise ValueError(
-            f"{dataframe_name} não possui as seguintes colunas obrigatórias: "
-            f"{missing}"
-        )
-
-
-def _to_numeric_columns(
-    df: pd.DataFrame,
-    columns: Iterable[str],
-) -> pd.DataFrame:
-    """
-    Converte as colunas existentes para valores numéricos.
-    """
-    result = df.copy()
-
-    for col in columns:
-        if col in result.columns:
-            result[col] = pd.to_numeric(result[col], errors="coerce")
-
-    return result
-
-
-def _get_model_feature_names(model) -> list[str]:
-    """
-    Obtém os nomes das features esperadas pelo modelo.
-
-    O XGBoost normalmente disponibiliza os nomes em:
+    Para modelos XGBoost, os nomes normalmente estão disponíveis em:
     model.get_booster().feature_names
     """
+
     feature_names = None
 
     try:
@@ -123,145 +87,40 @@ def _get_model_feature_names(model) -> list[str]:
         feature_names = None
 
     if not feature_names:
-        feature_names = getattr(model, "feature_names_in_", None)
+        feature_names = getattr(
+            model,
+            "feature_names_in_",
+            None,
+        )
 
-    if feature_names is None:
+    if not feature_names:
         raise ValueError(
-            "Não foi possível obter os nomes das features esperadas pelo modelo. "
-            "Verifique se o modelo foi treinado com um DataFrame contendo nomes "
-            "de colunas."
+            "Não foi possível identificar as features esperadas pelo modelo."
         )
 
     return list(feature_names)
 
 
-def _prepare_model_input(
-    df_simulated: pd.DataFrame,
-    df_base: pd.DataFrame,
-    model_expected_features: list[str],
-) -> pd.DataFrame:
+def ensure_required_columns(
+    df: pd.DataFrame,
+    required_columns: Iterable[str],
+    dataframe_name: str,
+) -> None:
     """
-    Prepara o DataFrame de entrada do modelo.
-
-    A função:
-
-    1. Mantém as colunas originais disponíveis;
-    2. Calcula features de diferença em relação à edição anterior;
-    3. Calcula features de variação percentual;
-    4. Alinha exatamente as colunas esperadas pelo modelo;
-    5. Mantém a ordem original das features;
-    6. Preenche features ausentes com zero.
+    Verifica se as colunas obrigatórias estão presentes.
     """
 
-    _ensure_required_columns(
-        df_simulated,
-        ["Universidade"],
-        "df_simulated",
-    )
+    missing_columns = [
+        column
+        for column in required_columns
+        if column not in df.columns
+    ]
 
-    _ensure_required_columns(
-        df_base,
-        ["Universidade"],
-        "df_base",
-    )
-
-    simulated = df_simulated.copy()
-    base = df_base.copy()
-
-    # Ordenação determinística por universidade
-    simulated = simulated.sort_values("Universidade").reset_index(drop=True)
-    base = base.sort_values("Universidade").reset_index(drop=True)
-
-    # Índice para fazer o alinhamento correto pela universidade
-    simulated_by_uni = simulated.set_index("Universidade")
-    base_by_uni = base.set_index("Universidade")
-
-    common_universities = simulated_by_uni.index
-
-    base_aligned = base_by_uni.reindex(common_universities)
-    simulated_aligned = simulated_by_uni.reindex(common_universities)
-
-    # DataFrame com todas as possíveis features
-    feature_frame = simulated_aligned.copy()
-
-    # Features utilizadas nas diferenças entre edições
-    columns_for_trends = (
-        NOTA_COLS
-        + POSICAO_COLS
-        + ["Nota", "Ranking"]
-    )
-
-    for col in columns_for_trends:
-        if col not in simulated_aligned.columns:
-            continue
-
-        if col not in base_aligned.columns:
-            continue
-
-        current_values = pd.to_numeric(
-            simulated_aligned[col],
-            errors="coerce",
-        ).fillna(0)
-
-        previous_values = pd.to_numeric(
-            base_aligned[col],
-            errors="coerce",
-        ).fillna(0)
-
-        diff_col = f"{col}_diff_prev"
-        pct_col = f"{col}_pct_change_prev"
-
-        feature_frame[diff_col] = current_values - previous_values
-
-        denominator = previous_values.copy()
-        denominator = denominator.replace(0, EPSILON)
-
-        feature_frame[pct_col] = (
-            feature_frame[diff_col] / denominator
-        ).replace([np.inf, -np.inf], 0).fillna(0)
-
-    # Remove a coluna textual usada apenas para alinhamento
-    if "Universidade" in feature_frame.columns:
-        feature_frame = feature_frame.drop(columns=["Universidade"])
-
-    # Cria o DataFrame final exatamente com as colunas do treinamento
-    X_model = pd.DataFrame(
-        index=feature_frame.index,
-        columns=model_expected_features,
-    )
-
-    missing_features = []
-
-    for feature in model_expected_features:
-        if feature in feature_frame.columns:
-            X_model[feature] = feature_frame[feature]
-        else:
-            # Para features ausentes, zero é apropriado principalmente
-            # para variáveis one-hot. Deve ser validado contra o treinamento.
-            X_model[feature] = 0.0
-            missing_features.append(feature)
-
-    # Converte todas as features para numérico
-    for col in X_model.columns:
-        X_model[col] = pd.to_numeric(
-            X_model[col],
-            errors="coerce",
-        ).fillna(0)
-
-    X_model = X_model[model_expected_features]
-
-    if missing_features:
-        print(
-            "MODEL_LOGIC_WARNING: "
-            f"{len(missing_features)} features esperadas pelo modelo "
-            "não foram encontradas nos dados e foram preenchidas com zero."
+    if missing_columns:
+        raise ValueError(
+            f"{dataframe_name} não possui as colunas obrigatórias: "
+            f"{missing_columns}"
         )
-        print(
-            "MODEL_LOGIC_WARNING: Features ausentes: "
-            f"{missing_features}"
-        )
-
-    return X_model.reset_index(drop=True)
 
 
 # ============================================================
@@ -270,9 +129,10 @@ def _prepare_model_input(
 
 def load_model(path: str):
     """
-    Carrega o modelo de Machine Learning.
+    Carrega o modelo salvo.
     """
-    print(f"MODEL_LOGIC_DEBUG: Tentando carregar modelo de: {path}")
+
+    print(f"MODEL_LOGIC_DEBUG: Carregando modelo de: {path}")
 
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -282,24 +142,25 @@ def load_model(path: str):
     try:
         model = joblib.load(path)
 
-        print(
-            "MODEL_LOGIC_DEBUG: Modelo carregado com sucesso: "
-            f"{os.path.basename(path)}"
-        )
-
-        return model
-
     except Exception as exc:
         raise RuntimeError(
             f"Erro ao carregar o modelo '{path}': {exc}"
         ) from exc
 
+    print(
+        "MODEL_LOGIC_DEBUG: Modelo carregado com sucesso: "
+        f"{os.path.basename(path)}"
+    )
+
+    return model
+
 
 def load_data(path: str) -> pd.DataFrame:
     """
-    Carrega os dados consolidados do arquivo Excel.
+    Carrega os dados da planilha Excel.
     """
-    print(f"MODEL_LOGIC_DEBUG: Tentando carregar dados de: {path}")
+
+    print(f"MODEL_LOGIC_DEBUG: Carregando dados de: {path}")
 
     if not os.path.exists(path):
         raise FileNotFoundError(
@@ -309,37 +170,20 @@ def load_data(path: str) -> pd.DataFrame:
     try:
         df = pd.read_excel(path)
 
-        if df.empty:
-            raise ValueError(
-                "O arquivo Excel foi carregado, mas está vazio."
-            )
-
-        required_columns = [
-            "Edicao_RUF",
-            "Universidade",
-            "Ranking",
-            "Nota",
-            *NOTA_COLS,
-            *POSICAO_COLS,
-        ]
-
-        _ensure_required_columns(
-            df,
-            required_columns,
-            "Arquivo Excel",
-        )
-
-        print(
-            "MODEL_LOGIC_DEBUG: Dados carregados com sucesso. "
-            f"Linhas: {len(df)} | Colunas: {len(df.columns)}"
-        )
-
-        return df
-
     except Exception as exc:
         raise RuntimeError(
-            f"Erro ao carregar os dados '{path}': {exc}"
+            f"Erro ao carregar a planilha '{path}': {exc}"
         ) from exc
+
+    if df.empty:
+        raise ValueError("A planilha está vazia.")
+
+    print(
+        "MODEL_LOGIC_DEBUG: Dados carregados com sucesso. "
+        f"Linhas: {len(df)} | Colunas: {len(df.columns)}"
+    )
+
+    return df
 
 
 # ============================================================
@@ -353,16 +197,9 @@ def calculate_average_trends(
     """
     Calcula a variação percentual média das demais universidades
     entre edições consecutivas.
-
-    A UFPE é excluída do cálculo para evitar que a tendência média
-    das outras instituições seja influenciada pela própria UFPE.
     """
 
-    print(
-        "MODEL_LOGIC_DEBUG: Iniciando cálculo das tendências médias."
-    )
-
-    _ensure_required_columns(
+    ensure_required_columns(
         df_full_data,
         ["Universidade", "Edicao_RUF"],
         "df_full_data",
@@ -370,7 +207,9 @@ def calculate_average_trends(
 
     df = df_full_data.copy()
 
-    df = df[df["Universidade"] != ufpe_name].copy()
+    df = df[
+        df["Universidade"] != ufpe_name
+    ].copy()
 
     trend_columns = [
         "Ranking",
@@ -380,47 +219,186 @@ def calculate_average_trends(
     ]
 
     available_columns = [
-        col for col in trend_columns if col in df.columns
+        column
+        for column in trend_columns
+        if column in df.columns
     ]
 
-    df = _to_numeric_columns(df, available_columns)
+    df["Edicao_RUF"] = pd.to_numeric(
+        df["Edicao_RUF"],
+        errors="coerce",
+    )
 
-    df = df.sort_values(
+    for column in available_columns:
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce",
+        )
+
+    df = df.dropna(
+        subset=["Universidade", "Edicao_RUF"]
+    ).sort_values(
         by=["Universidade", "Edicao_RUF"]
-    ).reset_index(drop=True)
+    )
 
-    grouped = df.groupby("Universidade", sort=False)
+    grouped = df.groupby(
+        "Universidade",
+        sort=False,
+    )
 
-    trends: Dict[str, float] = {}
+    trends = {}
 
-    for col in available_columns:
-        previous = grouped[col].shift(1)
-        current = df[col]
+    for column in available_columns:
+        current = df[column]
+        previous = grouped[column].shift(1)
 
         valid_previous = previous.notna()
-        denominator = previous.copy()
 
-        # Evita divisão por zero sem transformar todos os resultados em NaN
-        denominator = denominator.replace(0, EPSILON)
+        denominator = previous.replace(
+            0,
+            EPSILON,
+        )
 
-        pct_change = (
+        percentage_change = (
             (current - previous) / denominator
-        ).replace([np.inf, -np.inf], np.nan)
+        )
 
-        pct_change = pct_change[
-            valid_previous & pct_change.notna()
+        percentage_change = percentage_change.replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+
+        percentage_change = percentage_change[
+            valid_previous
+            & percentage_change.notna()
         ]
 
-        average_change = float(pct_change.mean()) if not pct_change.empty else 0.0
+        average_change = (
+            float(percentage_change.mean())
+            if not percentage_change.empty
+            else 0.0
+        )
 
-        trends[f"{col}_pct_change_prev"] = average_change
+        trends[
+            f"{column}_pct_change_prev"
+        ] = average_change
 
     print(
-        "MODEL_LOGIC_DEBUG: Tendências médias calculadas: "
-        f"{len(trends)} variáveis."
+        "MODEL_LOGIC_DEBUG: Tendências médias calculadas."
     )
 
     return trends
+
+
+# ============================================================
+# PREPARAÇÃO DAS FEATURES
+# ============================================================
+
+def prepare_model_input(
+    df_simulated: pd.DataFrame,
+    df_base: pd.DataFrame,
+    model_expected_features: list[str],
+) -> pd.DataFrame:
+    """
+    Cria o DataFrame final enviado ao modelo, com as mesmas
+    features e na mesma ordem do treinamento.
+    """
+
+    ensure_required_columns(
+        df_simulated,
+        ["Universidade"],
+        "df_simulated",
+    )
+
+    ensure_required_columns(
+        df_base,
+        ["Universidade"],
+        "df_base",
+    )
+
+    simulated = df_simulated.copy()
+    base = df_base.copy()
+
+    simulated = simulated.sort_values(
+        "Universidade"
+    ).set_index("Universidade")
+
+    base = base.sort_values(
+        "Universidade"
+    ).set_index("Universidade")
+
+    base_aligned = base.reindex(
+        simulated.index
+    )
+
+    features = simulated.copy()
+
+    columns_for_features = [
+        *NOTA_COLS,
+        *POSICAO_COLS,
+        "Nota",
+        "Ranking",
+    ]
+
+    for column in columns_for_features:
+        if column not in simulated.columns:
+            continue
+
+        if column not in base_aligned.columns:
+            continue
+
+        current = pd.to_numeric(
+            simulated[column],
+            errors="coerce",
+        ).fillna(0)
+
+        previous = pd.to_numeric(
+            base_aligned[column],
+            errors="coerce",
+        ).fillna(0)
+
+        diff_column = f"{column}_diff_prev"
+        pct_column = f"{column}_pct_change_prev"
+
+        features[diff_column] = current - previous
+
+        denominator = previous.replace(
+            0,
+            EPSILON,
+        )
+
+        features[pct_column] = (
+            features[diff_column] / denominator
+        ).replace(
+            [np.inf, -np.inf],
+            0,
+        ).fillna(0)
+
+    if "Universidade" in features.columns:
+        features = features.drop(
+            columns=["Universidade"]
+        )
+
+    X_model = pd.DataFrame(
+        index=features.index,
+        columns=model_expected_features,
+    )
+
+    for feature in model_expected_features:
+        if feature in features.columns:
+            X_model[feature] = features[feature]
+        else:
+            X_model[feature] = 0.0
+
+    for column in X_model.columns:
+        X_model[column] = pd.to_numeric(
+            X_model[column],
+            errors="coerce",
+        ).fillna(0)
+
+    return X_model[
+        model_expected_features
+    ].reset_index(drop=True)
 
 
 # ============================================================
@@ -428,44 +406,43 @@ def calculate_average_trends(
 # ============================================================
 
 def simulate_full_ranking_avg_trend(
-    df_base_edicao_6: pd.DataFrame,
+    df_base_edicao_6,
     model,
-    ufpe_name: str,
-    all_universities_average_trends: Dict[str, float],
-    pct_change_ensino: float,
-    pct_change_pesquisa: float,
-    pct_change_mercado: float,
-    pct_change_inovacao: float,
-    pct_change_internacionalizacao: float,
-    apply_other_uni_trends: bool,
-    model_expected_features: Optional[list[str]] = None,
-) -> pd.DataFrame:
+    ufpe_name,
+    all_universities_average_trends,
+    pct_change_ensino,
+    pct_change_pesquisa,
+    pct_change_mercado,
+    pct_change_inovacao,
+    pct_change_internacionalizacao,
+    apply_other_uni_trends,
+    model_expected_features=None,
+):
     """
-    Simula as notas da UFPE e, opcionalmente, aplica as tendências médias
-    às demais universidades.
-
-    O modelo prevê um ranking bruto. Em seguida, os resultados são
-    ordenados e transformados em posições consecutivas.
+    Executa a simulação do ranking.
     """
 
-    print(
-        "MODEL_LOGIC_DEBUG: Iniciando simulação do ranking."
-    )
+    required_columns = [
+        "Universidade",
+        "Ranking",
+        "Nota",
+        *NOTA_COLS,
+        *POSICAO_COLS,
+    ]
 
-    _ensure_required_columns(
+    ensure_required_columns(
         df_base_edicao_6,
-        [
-            "Universidade",
-            "Ranking",
-            "Nota",
-            *NOTA_COLS,
-            *POSICAO_COLS,
-        ],
+        required_columns,
         "df_base_edicao_6",
     )
 
-    df_base_original = df_base_edicao_6.copy()
-    df_simulated = df_base_edicao_6.copy()
+    df_base_original = (
+        df_base_edicao_6
+        .copy()
+        .reset_index(drop=True)
+    )
+
+    df_simulated = df_base_original.copy()
 
     # --------------------------------------------------------
     # Localiza a UFPE
@@ -477,74 +454,84 @@ def simulate_full_ranking_avg_trend(
 
     if not ufpe_indices:
         raise ValueError(
-            f"A universidade '{ufpe_name}' não foi encontrada "
-            "na edição base."
+            f"A universidade '{ufpe_name}' não foi encontrada."
         )
 
     ufpe_index = ufpe_indices[0]
 
     # --------------------------------------------------------
-    # Aplica as variações da UFPE
+    # Variações da UFPE
     # --------------------------------------------------------
 
-    slider_values = {
+    ufpe_changes = {
         "Nota em Ensino": pct_change_ensino,
         "Nota em Pesquisa": pct_change_pesquisa,
         "Nota em Mercado": pct_change_mercado,
         "Nota em Inovação": pct_change_inovacao,
-        "Nota em Internacionalização": pct_change_internacionalizacao,
+        "Nota em Internacionalização": (
+            pct_change_internacionalizacao
+        ),
     }
 
-    for nota_col, pct_change in slider_values.items():
+    for column, percentage in ufpe_changes.items():
         value = pd.to_numeric(
-            df_simulated.loc[ufpe_index, nota_col],
+            df_simulated.loc[
+                ufpe_index,
+                column,
+            ],
             errors="coerce",
         )
 
         if pd.isna(value):
             value = 0.0
 
-        df_simulated.loc[ufpe_index, nota_col] = (
-            value * (1.0 + float(pct_change))
+        df_simulated.loc[
+            ufpe_index,
+            column,
+        ] = value * (
+            1 + float(percentage)
         )
 
-    print(
-        "MODEL_LOGIC_DEBUG: Variações da UFPE aplicadas."
-    )
-
     # --------------------------------------------------------
-    # Aplica as tendências médias às demais universidades
+    # Tendências das demais universidades
     # --------------------------------------------------------
 
-    if apply_other_uni_trends and all_universities_average_trends:
+    if (
+        apply_other_uni_trends
+        and all_universities_average_trends
+    ):
+        other_mask = (
+            df_simulated["Universidade"] != ufpe_name
+        )
 
-        other_mask = df_simulated["Universidade"] != ufpe_name
-
-        for trend_key, average_change in (
+        for trend_name, average_change in (
             all_universities_average_trends.items()
         ):
             suffix = "_pct_change_prev"
 
-            if not trend_key.endswith(suffix):
+            if not trend_name.endswith(suffix):
                 continue
 
-            original_col = trend_key[:-len(suffix)]
+            original_column = trend_name[
+                :-len(suffix)
+            ]
 
-            if original_col not in df_simulated.columns:
+            if original_column not in df_simulated.columns:
                 continue
 
-            avg_change = float(average_change)
-
-            numeric_values = pd.to_numeric(
-                df_simulated.loc[other_mask, original_col],
+            values = pd.to_numeric(
+                df_simulated.loc[
+                    other_mask,
+                    original_column,
+                ],
                 errors="coerce",
+            ).fillna(0)
+
+            updated_values = values * (
+                1 + float(average_change)
             )
 
-            numeric_values = numeric_values.fillna(0)
-
-            updated_values = numeric_values * (1.0 + avg_change)
-
-            if original_col in RANKING_COLS:
+            if original_column in RANKING_COLS:
                 updated_values = (
                     updated_values
                     .round()
@@ -554,34 +541,39 @@ def simulate_full_ranking_avg_trend(
 
             df_simulated.loc[
                 other_mask,
-                original_col,
+                original_column,
             ] = updated_values
 
-        print(
-            "MODEL_LOGIC_DEBUG: Tendências médias aplicadas "
-            "às demais universidades."
-        )
-
     # --------------------------------------------------------
-    # Recalcula notas e posições
+    # Recalcula notas
     # --------------------------------------------------------
 
-    for nota_col in NOTA_COLS:
-        df_simulated[nota_col] = pd.to_numeric(
-            df_simulated[nota_col],
+    for column in NOTA_COLS:
+        df_simulated[column] = pd.to_numeric(
+            df_simulated[column],
             errors="coerce",
         ).fillna(0)
 
-        # Limita as notas ao intervalo usual de 0 a 100
-        df_simulated[nota_col] = df_simulated[nota_col].clip(0, 100)
+        df_simulated[column] = (
+            df_simulated[column]
+            .clip(lower=0, upper=100)
+        )
 
-    # Nota geral como média das cinco dimensões
-    df_simulated["Nota"] = df_simulated[NOTA_COLS].mean(axis=1)
+    df_simulated["Nota"] = (
+        df_simulated[NOTA_COLS]
+        .mean(axis=1)
+    )
 
-    # Recalcula as posições de cada dimensão
-    for nota_col, posicao_col in zip(NOTA_COLS, POSICAO_COLS):
-        df_simulated[posicao_col] = (
-            df_simulated[nota_col]
+    # --------------------------------------------------------
+    # Recalcula posições
+    # --------------------------------------------------------
+
+    for nota_column, position_column in zip(
+        NOTA_COLS,
+        POSICAO_COLS,
+    ):
+        df_simulated[position_column] = (
+            df_simulated[nota_column]
             .rank(
                 ascending=False,
                 method="min",
@@ -589,36 +581,19 @@ def simulate_full_ranking_avg_trend(
             .astype(int)
         )
 
-    print(
-        "MODEL_LOGIC_DEBUG: Notas e posições recalculadas."
-    )
-
     # --------------------------------------------------------
-    # Obtém as features esperadas pelo modelo
+    # Features do modelo
     # --------------------------------------------------------
 
     if model_expected_features is None:
-        model_expected_features = _get_model_feature_names(model)
-
-    if not model_expected_features:
-        raise ValueError(
-            "A lista de features esperadas pelo modelo está vazia."
+        model_expected_features = (
+            get_model_feature_names(model)
         )
 
-    # --------------------------------------------------------
-    # Prepara os dados para previsão
-    # --------------------------------------------------------
-
-    X_model = _prepare_model_input(
+    X_model = prepare_model_input(
         df_simulated=df_simulated,
         df_base=df_base_original,
         model_expected_features=model_expected_features,
-    )
-
-    print(
-        "MODEL_LOGIC_DEBUG: Dados preparados para o modelo. "
-        f"Linhas: {len(X_model)} | "
-        f"Features: {len(X_model.columns)}"
     )
 
     # --------------------------------------------------------
@@ -626,38 +601,37 @@ def simulate_full_ranking_avg_trend(
     # --------------------------------------------------------
 
     try:
-        predicted_values = model.predict(X_model)
+        predictions = model.predict(X_model)
 
     except Exception as exc:
         raise RuntimeError(
-            "Erro durante a previsão do modelo. "
-            "Verifique se as features do arquivo Excel são compatíveis "
-            "com as features usadas durante o treinamento."
+            "Erro ao executar a previsão. Verifique se as "
+            "features do modelo são compatíveis com a planilha."
         ) from exc
 
-    predicted_values = np.asarray(predicted_values).reshape(-1)
+    predictions = np.asarray(
+        predictions
+    ).reshape(-1)
 
-    if len(predicted_values) != len(df_simulated):
+    if len(predictions) != len(df_simulated):
         raise ValueError(
-            "O modelo retornou uma quantidade de previsões diferente "
-            "da quantidade de universidades."
+            "O modelo retornou uma quantidade de previsões "
+            "diferente da quantidade de universidades."
         )
 
-    # O valor previsto pelo modelo é usado apenas para ordenar
-    df_simulated["Model_Prediction"] = predicted_values
+    df_simulated["Model_Prediction"] = predictions
 
-    df_simulated = df_simulated.sort_values(
-        by="Model_Prediction",
-        ascending=True,
-    ).reset_index(drop=True)
-
-    # Ranking final consecutivo
-    df_simulated["Simulated_Ranking"] = (
-        np.arange(len(df_simulated)) + 1
+    df_simulated = (
+        df_simulated
+        .sort_values(
+            "Model_Prediction",
+            ascending=True,
+        )
+        .reset_index(drop=True)
     )
 
-    print(
-        "MODEL_LOGIC_DEBUG: Simulação finalizada."
+    df_simulated["Simulated_Ranking"] = (
+        np.arange(len(df_simulated)) + 1
     )
 
     return df_simulated
