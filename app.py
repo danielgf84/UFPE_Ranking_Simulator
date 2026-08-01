@@ -1,17 +1,14 @@
-# app.py
-
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
-
-from model_logic import (
+from models.model_logic import (
     calculate_average_trends,
+    get_model_feature_names,
     get_year_from_edition,
     load_data,
     load_model,
@@ -25,14 +22,14 @@ from model_logic import (
 # ============================================================
 
 st.set_page_config(
-    page_title="Simulador de Ranking RUF",
+    page_title="Simulador de Ranking RUF para a UFPE",
     page_icon="📊",
     layout="wide",
 )
 
 
 # ============================================================
-# CAMINHOS
+# CAMINHOS DO PROJETO
 # ============================================================
 
 PROJECT_BASE_PATH = Path(__file__).resolve().parent
@@ -49,56 +46,30 @@ INPUT_FILE_PATH = DATA_PATH / "ruf_consolidado_fe.xlsx"
 # ============================================================
 
 @st.cache_resource(show_spinner="Carregando modelo...")
-def load_cached_model(model_path: str):
+def load_cached_model(path: str):
     """
-    Carrega o modelo uma única vez durante a execução do app.
+    Carrega o modelo apenas uma vez durante a execução do aplicativo.
     """
-    return load_model(model_path)
+    return load_model(path)
 
 
 @st.cache_data(show_spinner="Carregando dados...")
-def load_cached_data(input_path: str) -> pd.DataFrame:
+def load_cached_data(path: str) -> pd.DataFrame:
     """
-    Carrega os dados e mantém o resultado em cache.
+    Carrega a planilha e mantém os dados em cache.
     """
-    return load_data(input_path)
+    return load_data(path)
 
 
 # ============================================================
-# FUNÇÕES AUXILIARES DA INTERFACE
+# FUNÇÕES AUXILIARES
 # ============================================================
 
-def show_file_status() -> None:
+def validate_required_columns(df: pd.DataFrame) -> None:
     """
-    Mostra informações úteis caso algum arquivo não seja encontrado.
+    Verifica se a planilha possui as colunas essenciais.
     """
-    st.write("Diretório do aplicativo:", PROJECT_BASE_PATH)
-    st.write("Pasta de dados:", DATA_PATH)
-    st.write("Pasta de modelos:", MODELS_PATH)
 
-    if not DATA_PATH.exists():
-        st.error(f"A pasta de dados não existe: {DATA_PATH}")
-
-    if not MODELS_PATH.exists():
-        st.error(f"A pasta de modelos não existe: {MODELS_PATH}")
-
-    if not INPUT_FILE_PATH.exists():
-        st.error(
-            "Arquivo Excel não encontrado:\n"
-            f"{INPUT_FILE_PATH}"
-        )
-
-    if not MODEL_PATH.exists():
-        st.error(
-            "Arquivo do modelo não encontrado:\n"
-            f"{MODEL_PATH}"
-        )
-
-
-def validate_dataframe(df: pd.DataFrame) -> None:
-    """
-    Valida colunas mínimas necessárias para a aplicação.
-    """
     required_columns = [
         "Edicao_RUF",
         "Universidade",
@@ -117,82 +88,85 @@ def validate_dataframe(df: pd.DataFrame) -> None:
     ]
 
     missing_columns = [
-        column for column in required_columns
+        column
+        for column in required_columns
         if column not in df.columns
     ]
 
     if missing_columns:
         raise ValueError(
-            "As seguintes colunas obrigatórias não foram encontradas "
-            f"na planilha: {missing_columns}"
+            "As seguintes colunas obrigatórias não existem na planilha:\n"
+            f"{missing_columns}"
         )
 
 
-def get_model_features(model) -> list[str]:
+def show_path_information() -> None:
     """
-    Obtém a lista de features do modelo XGBoost.
+    Exibe os caminhos utilizados pelo aplicativo para facilitar a depuração.
     """
-    feature_names = None
 
-    try:
-        feature_names = model.get_booster().feature_names
-    except Exception:
-        feature_names = None
+    st.write(f"Diretório do aplicativo: `{PROJECT_BASE_PATH}`")
+    st.write(f"Pasta de dados: `{DATA_PATH}`")
+    st.write(f"Pasta de modelos: `{MODELS_PATH}`")
+    st.write(f"Arquivo Excel: `{INPUT_FILE_PATH}`")
+    st.write(f"Arquivo do modelo: `{MODEL_PATH}`")
 
-    if not feature_names:
-        feature_names = getattr(model, "feature_names_in_", None)
-
-    if not feature_names:
-        raise ValueError(
-            "Não foi possível identificar as features esperadas pelo modelo. "
-            "O modelo precisa ter sido treinado com nomes de colunas."
-        )
-
-    return list(feature_names)
+    st.write(
+        f"Arquivo Excel existe: `{INPUT_FILE_PATH.exists()}`"
+    )
+    st.write(
+        f"Arquivo do modelo existe: `{MODEL_PATH.exists()}`"
+    )
 
 
-def format_number(value, decimals: int = 2):
+def format_value(value, decimals: int = 2):
     """
-    Formata números para exibição.
+    Formata valores numéricos para exibição.
     """
+
     if pd.isna(value):
         return "N/A"
 
-    return f"{float(value):.{decimals}f}"
+    try:
+        return f"{float(value):.{decimals}f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ============================================================
-# APLICAÇÃO PRINCIPAL
+# EXECUÇÃO PRINCIPAL
 # ============================================================
-
-st.title("📊 Simulador de Ranking RUF para a UFPE")
 
 try:
     # --------------------------------------------------------
-    # Verificação inicial dos arquivos
+    # Verificação dos arquivos
     # --------------------------------------------------------
 
-    if not MODEL_PATH.exists() or not INPUT_FILE_PATH.exists():
+    if not INPUT_FILE_PATH.exists() or not MODEL_PATH.exists():
         st.error(
-            "Não foi possível localizar um ou mais arquivos necessários."
+            "Um ou mais arquivos necessários não foram encontrados."
         )
 
-        with st.expander("Detalhes dos caminhos"):
-            show_file_status()
+        with st.expander("Ver detalhes dos caminhos"):
+            show_path_information()
 
         st.stop()
 
     # --------------------------------------------------------
-    # Carregamento
+    # Carregamento do modelo e dos dados
     # --------------------------------------------------------
 
-    model = load_cached_model(str(MODEL_PATH))
+    loaded_model = load_cached_model(str(MODEL_PATH))
     df_full = load_cached_data(str(INPUT_FILE_PATH))
 
-    validate_dataframe(df_full)
+    if df_full.empty:
+        st.error("A planilha foi carregada, mas não contém dados.")
+        st.stop()
+
+    validate_required_columns(df_full)
 
     # --------------------------------------------------------
-    # Edição mais recente
+    # Preparação da coluna de edição
     # --------------------------------------------------------
 
     df_full["Edicao_RUF"] = pd.to_numeric(
@@ -200,12 +174,23 @@ try:
         errors="coerce",
     )
 
-    if df_full["Edicao_RUF"].isna().all():
+    df_full = df_full.dropna(
+        subset=["Edicao_RUF"]
+    ).copy()
+
+    if df_full.empty:
         raise ValueError(
-            "A coluna 'Edicao_RUF' não contém valores numéricos válidos."
+            "A coluna 'Edicao_RUF' não possui valores válidos."
         )
 
-    latest_edition = int(df_full["Edicao_RUF"].max())
+    df_full["Edicao_RUF"] = (
+        df_full["Edicao_RUF"]
+        .astype(int)
+    )
+
+    latest_edition = int(
+        df_full["Edicao_RUF"].max()
+    )
 
     df_base = df_full[
         df_full["Edicao_RUF"] == latest_edition
@@ -213,19 +198,20 @@ try:
 
     if df_base.empty:
         raise ValueError(
-            f"Não existem dados para a edição {latest_edition}."
+            f"Não foram encontrados dados para a edição "
+            f"{latest_edition}."
         )
 
     # --------------------------------------------------------
     # Localização da UFPE
     # --------------------------------------------------------
 
-    ufpe_data = df_base[
+    ufpe_rows = df_base[
         df_base["Universidade"] == ufpe_exact_name
     ]
 
-    if ufpe_data.empty:
-        available_names = (
+    if ufpe_rows.empty:
+        sample_names = (
             df_base["Universidade"]
             .dropna()
             .astype(str)
@@ -236,35 +222,40 @@ try:
         raise ValueError(
             f"A universidade '{ufpe_exact_name}' não foi encontrada "
             f"na edição {latest_edition}.\n\n"
-            "Alguns nomes disponíveis na planilha: "
-            f"{available_names}"
+            "Verifique se o nome na planilha é exatamente igual. "
+            f"Alguns nomes encontrados: {sample_names}"
         )
 
-    original_ufpe = ufpe_data.iloc[0]
+    original_ufpe = ufpe_rows.iloc[0]
 
     # --------------------------------------------------------
-    # Tendências médias
+    # Tendências históricas
     # --------------------------------------------------------
 
-    with st.spinner("Calculando tendências históricas..."):
-        average_trends = calculate_average_trends(
-            df_full_data=df_full,
-            ufpe_name=ufpe_exact_name,
-        )
+    average_trends = calculate_average_trends(
+        df_full_data=df_full,
+        ufpe_name=ufpe_exact_name,
+    )
 
     # --------------------------------------------------------
-    # Features do modelo
+    # Features esperadas pelo modelo
     # --------------------------------------------------------
 
-    model_expected_features = get_model_features(model)
+    model_expected_features = get_model_feature_names(
+        loaded_model
+    )
 
     # --------------------------------------------------------
-    # Cabeçalho
+    # Interface
     # --------------------------------------------------------
+
+    st.title("📊 Simulador de Ranking RUF para a UFPE")
 
     base_year = get_year_from_edition(latest_edition)
     simulated_edition = latest_edition + 1
-    simulated_year = get_year_from_edition(simulated_edition)
+    simulated_year = get_year_from_edition(
+        simulated_edition
+    )
 
     st.markdown(
         f"**Edição base:** {base_year} "
@@ -272,12 +263,13 @@ try:
     )
 
     st.markdown(
-        f"**Próxima edição simulada:** {simulated_year} "
+        f"**Edição simulada:** {simulated_year} "
         f"(Edição {simulated_edition})"
     )
 
     st.info(
-        f"Foram encontradas {len(df_base)} universidades na edição base."
+        f"Foram encontradas {len(df_base)} universidades "
+        "na edição base."
     )
 
     # --------------------------------------------------------
@@ -290,7 +282,7 @@ try:
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.markdown("#### Notas da UFPE")
+        st.markdown("#### Variação das notas da UFPE")
 
         pct_change_ensino = (
             st.slider(
@@ -315,7 +307,7 @@ try:
         )
 
     with col2:
-        st.markdown("#### Notas da UFPE")
+        st.markdown("#### Variação das notas da UFPE")
 
         pct_change_mercado = (
             st.slider(
@@ -340,7 +332,7 @@ try:
         )
 
     with col3:
-        st.markdown("#### Notas da UFPE")
+        st.markdown("#### Variação das notas da UFPE")
 
         pct_change_internacionalizacao = (
             st.slider(
@@ -359,13 +351,13 @@ try:
         )
 
     # --------------------------------------------------------
-    # Execução da simulação
+    # Execução
     # --------------------------------------------------------
 
     with st.spinner("Executando simulação..."):
         simulated_df = simulate_full_ranking_avg_trend(
             df_base_edicao_6=df_base,
-            model=model,
+            model=loaded_model,
             ufpe_name=ufpe_exact_name,
             all_universities_average_trends=average_trends,
             pct_change_ensino=pct_change_ensino,
@@ -379,10 +371,6 @@ try:
             model_expected_features=model_expected_features,
         )
 
-    # --------------------------------------------------------
-    # Resultado da UFPE
-    # --------------------------------------------------------
-
     simulated_ufpe_rows = simulated_df[
         simulated_df["Universidade"] == ufpe_exact_name
     ]
@@ -394,6 +382,10 @@ try:
 
     simulated_ufpe = simulated_ufpe_rows.iloc[0]
 
+    # --------------------------------------------------------
+    # Resultado principal
+    # --------------------------------------------------------
+
     st.divider()
     st.subheader(
         f"Resultado da simulação para a UFPE — {simulated_year}"
@@ -404,62 +396,90 @@ try:
     with result_col1:
         st.metric(
             label="Ranking previsto",
-            value=int(simulated_ufpe["Simulated_Ranking"]),
+            value=int(
+                simulated_ufpe["Simulated_Ranking"]
+            ),
         )
 
     with result_col2:
         st.metric(
             label="Nota geral prevista",
-            value=format_number(simulated_ufpe["Nota"]),
+            value=format_value(
+                simulated_ufpe["Nota"]
+            ),
         )
 
     # --------------------------------------------------------
-    # Comparativo tabular
+    # Comparativo detalhado
     # --------------------------------------------------------
 
     st.divider()
     st.subheader("Comparativo original versus simulado")
 
-    comparison_metrics = [
-        ("Ranking", "Ranking", "Simulated_Ranking"),
-        ("Nota Geral", "Nota", "Nota"),
-        ("Nota em Ensino", "Nota em Ensino", "Nota em Ensino"),
-        ("Nota em Pesquisa", "Nota em Pesquisa", "Nota em Pesquisa"),
-        ("Nota em Mercado", "Nota em Mercado", "Nota em Mercado"),
-        ("Nota em Inovação", "Nota em Inovação", "Nota em Inovação"),
-        (
-            "Nota em Internacionalização",
-            "Nota em Internacionalização",
-            "Nota em Internacionalização",
-        ),
+    original_label = (
+        f"Edição {base_year} — Original"
+    )
+
+    simulated_label = (
+        f"Edição {simulated_year} — Simulada"
+    )
+
+    comparison_df = pd.DataFrame(
+        {
+            "Métrica": [
+                "Ranking",
+                "Nota Geral",
+                "Nota em Ensino",
+                "Nota em Pesquisa",
+                "Nota em Mercado",
+                "Nota em Inovação",
+                "Nota em Internacionalização",
+            ],
+            original_label: [
+                original_ufpe["Ranking"],
+                original_ufpe["Nota"],
+                original_ufpe["Nota em Ensino"],
+                original_ufpe["Nota em Pesquisa"],
+                original_ufpe["Nota em Mercado"],
+                original_ufpe["Nota em Inovação"],
+                original_ufpe[
+                    "Nota em Internacionalização"
+                ],
+            ],
+            simulated_label: [
+                simulated_ufpe["Simulated_Ranking"],
+                simulated_ufpe["Nota"],
+                simulated_ufpe["Nota em Ensino"],
+                simulated_ufpe["Nota em Pesquisa"],
+                simulated_ufpe["Nota em Mercado"],
+                simulated_ufpe["Nota em Inovação"],
+                simulated_ufpe[
+                    "Nota em Internacionalização"
+                ],
+            ],
+        }
+    )
+
+    comparison_df["Diferença"] = (
+        comparison_df[simulated_label]
+        - comparison_df[original_label]
+    )
+
+    ranking_mask = (
+        comparison_df["Métrica"] == "Ranking"
+    )
+
+    # No ranking, valor positivo representa melhora
+    comparison_df.loc[
+        ranking_mask,
+        "Diferença",
+    ] = -comparison_df.loc[
+        ranking_mask,
+        "Diferença",
     ]
 
-    comparison_rows = []
-
-    for label, original_column, simulated_column in comparison_metrics:
-        original_value = original_ufpe[original_column]
-        simulated_value = simulated_ufpe[simulated_column]
-
-        difference = simulated_value - original_value
-
-        # Para ranking, uma diferença positiva deve significar melhora
-        if label == "Ranking":
-            difference = original_value - simulated_value
-
-        comparison_rows.append(
-            {
-                "Métrica": label,
-                f"{base_year} — Original": original_value,
-                f"{simulated_year} — Simulada": simulated_value,
-                "Diferença": difference,
-            }
-        )
-
-    comparison_df = pd.DataFrame(comparison_rows)
-    comparison_df = comparison_df.set_index("Métrica")
-
     st.dataframe(
-        comparison_df,
+        comparison_df.set_index("Métrica"),
         use_container_width=True,
     )
 
@@ -470,41 +490,47 @@ try:
     st.divider()
     st.subheader("Comparativo gráfico das notas")
 
-    chart_rows = []
+    chart_data = pd.DataFrame(
+        {
+            "Métrica": [
+                "Ensino",
+                "Pesquisa",
+                "Mercado",
+                "Inovação",
+                "Internacionalização",
+                "Geral",
+            ],
+            original_label: [
+                original_ufpe["Nota em Ensino"],
+                original_ufpe["Nota em Pesquisa"],
+                original_ufpe["Nota em Mercado"],
+                original_ufpe["Nota em Inovação"],
+                original_ufpe[
+                    "Nota em Internacionalização"
+                ],
+                original_ufpe["Nota"],
+            ],
+            simulated_label: [
+                simulated_ufpe["Nota em Ensino"],
+                simulated_ufpe["Nota em Pesquisa"],
+                simulated_ufpe["Nota em Mercado"],
+                simulated_ufpe["Nota em Inovação"],
+                simulated_ufpe[
+                    "Nota em Internacionalização"
+                ],
+                simulated_ufpe["Nota"],
+            ],
+        }
+    )
 
-    chart_metrics = [
-        ("Ensino", "Nota em Ensino"),
-        ("Pesquisa", "Nota em Pesquisa"),
-        ("Mercado", "Nota em Mercado"),
-        ("Inovação", "Nota em Inovação"),
-        (
-            "Internacionalização",
-            "Nota em Internacionalização",
-        ),
-        ("Geral", "Nota"),
-    ]
-
-    for label, column in chart_metrics:
-        chart_rows.append(
-            {
-                "Métrica": label,
-                "Edição": f"{base_year} — Original",
-                "Nota": original_ufpe[column],
-            }
-        )
-
-        chart_rows.append(
-            {
-                "Métrica": label,
-                "Edição": f"{simulated_year} — Simulada",
-                "Nota": simulated_ufpe[column],
-            }
-        )
-
-    chart_data = pd.DataFrame(chart_rows)
+    chart_data_melted = chart_data.melt(
+        id_vars=["Métrica"],
+        var_name="Edição",
+        value_name="Nota",
+    )
 
     chart = (
-        alt.Chart(chart_data)
+        alt.Chart(chart_data_melted)
         .mark_bar()
         .encode(
             x=alt.X(
@@ -526,9 +552,10 @@ try:
             ],
         )
         .properties(
-            height=450,
             title="Notas da UFPE por dimensão",
+            height=450,
         )
+        .interactive()
     )
 
     st.altair_chart(
@@ -556,7 +583,9 @@ try:
         *note_columns,
     ]
 
-    display_df = simulated_df[display_columns].head(10).copy()
+    display_df = simulated_df[
+        display_columns
+    ].head(10).copy()
 
     display_df = display_df.rename(
         columns={
@@ -566,15 +595,16 @@ try:
         }
     )
 
-    note_display_columns = [
+    numeric_columns = [
         column
         for column in display_df.columns
-        if "Nota" in column
+        if column == "Nota Geral"
+        or column.startswith("Nota em ")
     ]
 
-    for column in note_display_columns:
-        display_df[column] = display_df[column].map(
-            lambda value: format_number(value)
+    for column in numeric_columns:
+        display_df[column] = display_df[column].apply(
+            lambda value: format_value(value)
         )
 
     st.dataframe(
@@ -583,15 +613,12 @@ try:
         hide_index=True,
     )
 
-    # --------------------------------------------------------
-    # Rodapé
-    # --------------------------------------------------------
-
     st.divider()
 
-    st.caption(
-        "As previsões são estimativas baseadas no modelo carregado "
-        "e não representam garantia de resultados futuros."
+    st.info(
+        "Este simulador utiliza um modelo de Machine Learning "
+        "treinado com dados históricos do RUF. As previsões são "
+        "estimativas e não garantem resultados futuros."
     )
 
 except Exception as exc:
@@ -599,7 +626,7 @@ except Exception as exc:
         "O aplicativo encontrou um erro durante a execução."
     )
 
-    with st.expander("Exibir detalhes técnicos do erro"):
+    with st.expander("Exibir detalhes técnicos"):
         st.exception(exc)
 
     st.stop()
